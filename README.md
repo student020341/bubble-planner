@@ -1,0 +1,1 @@
+a simple base for a web canvas project using plain js and html
