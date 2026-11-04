@@ -4,22 +4,29 @@
 
 class ProjectStore {
     /**
-     * @param {StorageDB} db - Storage persistence instance.
+     * @param {StorageDB} [db] - Optional storage persistence instance.
      */
-    constructor(db) {
-        /** @type {StorageDB} */
+    constructor(db = null) {
+        /** @type {StorageDB|null} */
         this.db = db;
 
         /** @type {string} */
         this.projectId = "default";
 
-        /** @type {ProjectDocument} */
+        /** @type {ProjectDocument} Seeded with initial mock data for immediate UI testing */
         this.doc = {
-            lastNodeId: 0,
-            lastRelId: 0,
+            lastNodeId: 4,
+            lastRelId: 1,
             types: ["text", "number"],
-            nodes: [],
-            relationships: []
+            nodes: [
+                { id: 1, parentId: null, label: "Postal Service", description: "Root system", x: 400, y: 300, properties: { hq: "text" } },
+                { id: 2, parentId: 1, label: "Post Office", description: "Central hub", x: 250, y: 300, properties: {} },
+                { id: 3, parentId: 1, label: "Mail Truck", description: "Transport unit", x: 500, y: 220, properties: {} },
+                { id: 4, parentId: 1, label: "Customer Location", description: "Recipient address", x: 500, y: 380, properties: { address: "text" } }
+            ],
+            relationships: [
+                { id: 1, from: 3, to: 4, label: "delivery", description: "Delivers mail", properties: {} }
+            ]
         };
 
         /** @type {number|null} Active view level (null = root level) */
@@ -30,18 +37,42 @@ class ProjectStore {
     }
 
     /**
+     * The node representing the current level we are inside of (null if root).
+     * @returns {BubbleNode|null}
+     */
+    get currentBubble() {
+        if (this.currentParentId == null) return null;
+        return this.doc.nodes.find(n => n.id === this.currentParentId) || null;
+    }
+
+    /**
+     * All nodes belonging to the current layer.
+     * @returns {BubbleNode[]}
+     */
+    get currentLayerNodes() {
+        return this.doc.nodes.filter(n => n.parentId === this.currentParentId);
+    }
+
+    /**
      * Subscribe to state change notifications.
      * @param {() => void} listener
      * @returns {() => void} Unsubscribe function
      */
     subscribe(listener) {
-        // stub
-        return () => {};
+        this.listeners.push(listener);
+        return () => {
+            this.listeners = this.listeners.filter(l => l !== listener);
+        };
     }
 
-    /** Notify all listeners of state change and trigger auto-save. */
+    /** Notify all listeners of state change and trigger auto-save if db exists. */
     notify() {
-        // stub
+        for (const listener of this.listeners) {
+            listener();
+        }
+        if (this.db) {
+            this.saveProject();
+        }
     }
 
     // --- Navigation ---
@@ -51,14 +82,35 @@ class ProjectStore {
      * @param {number} nodeId
      */
     enterBubble(nodeId) {
-        // stub
+        const target = this.doc.nodes.find(n => n.id === nodeId);
+        if (target) {
+            this.currentParentId = nodeId;
+            this.notify();
+        }
     }
 
     /**
      * Navigate up to parent bubble or root.
      */
     leaveBubble() {
-        // stub
+        if (this.currentParentId == null) return;
+        const current = this.currentBubble;
+        this.currentParentId = current ? current.parentId : null;
+        this.notify();
+    }
+
+    /**
+     * Return breadcrumb chain from root down to current parent.
+     * @returns {BubbleNode[]}
+     */
+    getBreadcrumbs() {
+        const trail = [];
+        let cur = this.currentBubble;
+        while (cur) {
+            trail.unshift(cur);
+            cur = cur.parentId != null ? this.doc.nodes.find(n => n.id === cur.parentId) : null;
+        }
+        return trail;
     }
 
     /**
@@ -66,17 +118,18 @@ class ProjectStore {
      * @returns {BubbleNode[]}
      */
     getVisibleNodes() {
-        // stub
-        return [];
+        return this.currentLayerNodes;
     }
 
     /**
      * Get relationships relevant to the visible nodes.
+     * Intra-layer actions are directly between visible nodes.
+     * Cross-layer actions involve at least one node in the visible layer.
      * @returns {BubbleRelationship[]}
      */
     getVisibleRelationships() {
-        // stub
-        return [];
+        const visibleIds = new Set(this.getVisibleNodes().map(n => n.id));
+        return this.doc.relationships.filter(r => visibleIds.has(r.from) || visibleIds.has(r.to));
     }
 
     // --- Node Actions ---
@@ -89,8 +142,17 @@ class ProjectStore {
      * @returns {BubbleNode}
      */
     addNode(label, x, y) {
-        // stub
-        return null;
+        const node = {
+            id: ++this.doc.lastNodeId,
+            parentId: this.currentParentId,
+            label: label || `Node ${this.doc.lastNodeId}`,
+            x,
+            y,
+            properties: {}
+        };
+        this.doc.nodes.push(node);
+        this.notify();
+        return node;
     }
 
     /**
@@ -99,7 +161,11 @@ class ProjectStore {
      * @param {Partial<BubbleNode>} patch
      */
     updateNode(id, patch) {
-        // stub
+        const node = this.doc.nodes.find(n => n.id === id);
+        if (node) {
+            Object.assign(node, patch);
+            this.notify();
+        }
     }
 
     /**
@@ -107,7 +173,23 @@ class ProjectStore {
      * @param {number} id
      */
     removeNode(id) {
-        // stub
+        const toDeleteIds = new Set([id]);
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const n of this.doc.nodes) {
+                if (n.parentId != null && toDeleteIds.has(n.parentId) && !toDeleteIds.has(n.id)) {
+                    toDeleteIds.add(n.id);
+                    changed = true;
+                }
+            }
+        }
+
+        this.doc.nodes = this.doc.nodes.filter(n => !toDeleteIds.has(n.id));
+        this.doc.relationships = this.doc.relationships.filter(
+            r => !toDeleteIds.has(r.from) && !toDeleteIds.has(r.to)
+        );
+        this.notify();
     }
 
     // --- Relationship Actions ---
@@ -120,8 +202,16 @@ class ProjectStore {
      * @returns {BubbleRelationship}
      */
     addRelationship(fromId, toId, label) {
-        // stub
-        return null;
+        const rel = {
+            id: ++this.doc.lastRelId,
+            from: fromId,
+            to: toId,
+            label: label || "action",
+            properties: {}
+        };
+        this.doc.relationships.push(rel);
+        this.notify();
+        return rel;
     }
 
     /**
@@ -129,7 +219,8 @@ class ProjectStore {
      * @param {number} id
      */
     removeRelationship(id) {
-        // stub
+        this.doc.relationships = this.doc.relationships.filter(r => r.id !== id);
+        this.notify();
     }
 
     // --- Persistence & IO ---
@@ -140,7 +231,13 @@ class ProjectStore {
      * @returns {Promise<void>}
      */
     async loadProject(projectId) {
-        // stub
+        if (!this.db) return;
+        const saved = await this.db.get(projectId);
+        if (saved) {
+            this.doc = saved;
+            this.currentParentId = null;
+            this.notify();
+        }
     }
 
     /**
@@ -148,7 +245,8 @@ class ProjectStore {
      * @returns {Promise<void>}
      */
     async saveProject() {
-        // stub
+        if (!this.db) return;
+        await this.db.set(this.projectId, this.doc);
     }
 
     /**
@@ -156,8 +254,7 @@ class ProjectStore {
      * @returns {string}
      */
     exportJson() {
-        // stub
-        return "";
+        return JSON.stringify(this.doc, null, 2);
     }
 
     /**
@@ -165,7 +262,12 @@ class ProjectStore {
      * @param {string|ProjectDocument} data
      */
     importJson(data) {
-        // stub
+        const parsed = typeof data === "string" ? JSON.parse(data) : data;
+        if (parsed && Array.isArray(parsed.nodes)) {
+            this.doc = parsed;
+            this.currentParentId = null;
+            this.notify();
+        }
     }
 
     /**
@@ -173,8 +275,59 @@ class ProjectStore {
      * @returns {string}
      */
     exportOutline() {
-        // stub
-        return "";
+        const idToNode = new Map(this.doc.nodes.map(n => [n.id, n]));
+        const childrenMap = new Map();
+        for (const node of this.doc.nodes) {
+            const pid = node.parentId;
+            if (!childrenMap.has(pid)) childrenMap.set(pid, []);
+            childrenMap.get(pid).push(node);
+        }
+
+        const outRels = new Map();
+        for (const rel of this.doc.relationships) {
+            if (!outRels.has(rel.from)) outRels.set(rel.from, []);
+            outRels.get(rel.from).push(rel);
+        }
+
+        const lines = [];
+
+        const dumpNode = (node, depth) => {
+            const indent = "\t".repeat(depth);
+            lines.push(`${indent}${node.label}`);
+
+            // Properties
+            const props = Object.entries(node.properties || {});
+            if (props.length > 0) {
+                lines.push(`${indent}\tproperties`);
+                for (const [k, v] of props) {
+                    lines.push(`${indent}\t\t${k}: ${v}`);
+                }
+            }
+
+            // Rels
+            const rels = outRels.get(node.id) || [];
+            if (rels.length > 0) {
+                lines.push(`${indent}\trels`);
+                for (const r of rels) {
+                    const target = idToNode.get(r.to);
+                    const targetLabel = target ? target.label : `#${r.to}`;
+                    lines.push(`${indent}\t\t${targetLabel}: ${r.label}`);
+                }
+            }
+
+            // Sub-bubbles
+            const children = childrenMap.get(node.id) || [];
+            for (const child of children) {
+                dumpNode(child, depth + 1);
+            }
+        };
+
+        const roots = childrenMap.get(null) || [];
+        for (const root of roots) {
+            dumpNode(root, 0);
+        }
+
+        return lines.join("\n");
     }
 
     /**
@@ -182,6 +335,6 @@ class ProjectStore {
      * @param {string} text
      */
     importOutline(text) {
-        // stub
+        // Will implement parser in future step
     }
 }

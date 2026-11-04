@@ -1,38 +1,35 @@
-// world setup
-setWorld(0, 0, "fit", false);
-
-// data
-//
-//
+// World setup: 1:1 screen mapping so Camera manages virtual space
+setWorld(0, 0, "fill", false);
 
 /** @type CanvasRenderingContext2D */
 const ctx = canvasContext2D;
 
-const box = {
-    x: 20,
-    y: 30,
-    w: 40,
-};
+// Initialize Store with mock data
+const store = new ProjectStore();
 
-// functions
-//
-//
+// Initialize Camera
+const camera = new Camera(canvas);
+camera.fitToNodes(store.getVisibleNodes());
 
-// logic
+// Initialize Canvas Interaction View
+const canvasView = new CanvasView(canvas, store, camera);
+
+// Keyboard shortcuts: Esc to drill up
+window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+        store.leaveBubble();
+        canvasView.selectedNode = null;
+        camera.fitToNodes(store.getVisibleNodes());
+    }
+});
+
+// Main Loop logic and render
 const logic = (dt) => {
-    // update physics / game state
+    // State updates if needed
 };
 
-// render
-const render = (_, cw, ch) => {
-    // clear what was drawn before
-    ctx.clearRect(0, 0, cw, ch);
-
-    // draw white box outline
-    ctx.strokeStyle = "white";
-    ctx.strokeRect(box.x, box.y, box.w, box.w);
+const render = (dt, cw, ch) => {
+    canvasView.render();
 };
-
-// start
 
 loop([logic, render]);
