@@ -7,13 +7,15 @@ class CanvasView {
      * @param {HTMLCanvasElement} canvas
      * @param {ProjectStore} store
      * @param {Camera} camera
+     * @param {ActionRegistry} actionRegistry
      */
-    constructor(canvas, store, camera) {
+    constructor(canvas, store, camera, actionRegistry) {
         this.canvas = canvas;
         /** @type {CanvasRenderingContext2D} */
         this.ctx = canvas.getContext("2d");
         this.store = store;
         this.camera = camera;
+        this.actionRegistry = actionRegistry;
 
         /** @type {'idle' | 'panning' | 'dragging_node' | 'connecting_action'} */
         this.mode = "idle";
@@ -212,19 +214,21 @@ class CanvasView {
 
     onDoubleClick(e) {
         const hit = this.hitTest(e.clientX, e.clientY);
+        const worldPos = this.camera.screenToWorld(e.clientX, e.clientY);
+
+        const context = {
+            store: this.store,
+            canvasView: this,
+            camera: this.camera,
+            node: hit.node,
+            worldPos,
+            originalEvent: e
+        };
+
         if (hit.node) {
-            // Drill down into double-clicked bubble
-            this.store.enterBubble(hit.node.id);
-            this.selectedNode = null;
-            this.camera.fitToNodes(this.store.getVisibleNodes());
+            this.actionRegistry.trigger("node:dblclick", context);
         } else {
-            // Double-click empty canvas = create new bubble
-            const worldPos = this.camera.screenToWorld(e.clientX, e.clientY);
-            const label = window.prompt("New bubble name:", "New Item");
-            if (label) {
-                const node = this.store.addNode(label, worldPos.x, worldPos.y);
-                this.selectedNode = node;
-            }
+            this.actionRegistry.trigger("canvas:dblclick", context);
         }
     }
 
@@ -560,39 +564,12 @@ class CanvasView {
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-        // Top Navigation Bar / Breadcrumbs
-        ctx.fillStyle = "rgba(10, 15, 22, 0.85)";
-        ctx.fillRect(0, 0, window.innerWidth, 42);
-        ctx.strokeStyle = "#334155";
-        ctx.strokeRect(0, 42, window.innerWidth, 1);
-
-        const breadcrumbs = this.store.getBreadcrumbs();
-        ctx.font = "14px system-ui, sans-serif";
-        ctx.textAlign = "left";
-        ctx.textBaseline = "middle";
-
-        let bx = 20;
-        ctx.fillStyle = this.store.currentParentId == null ? "#00c3ff" : "#94a3b8";
-        ctx.fillText("Root (Project)", bx, 21);
-        bx += ctx.measureText("Root (Project)").width + 12;
-
-        for (let i = 0; i < breadcrumbs.length; i++) {
-            const b = breadcrumbs[i];
-            const isLast = i === breadcrumbs.length - 1;
-
-            ctx.fillStyle = "#64748b";
-            ctx.fillText("›", bx, 21);
-            bx += 16;
-
-            ctx.fillStyle = isLast ? "#00c3ff" : "#94a3b8";
-            ctx.fillText(b.label, bx, 21);
-            bx += ctx.measureText(b.label).width + 12;
-        }
-
         // Help hint on bottom
         ctx.font = "12px system-ui, sans-serif";
         ctx.fillStyle = "#64748b";
-        ctx.fillText("Double-click: Drill In / Add  |  Drag ⚡: Connect  |  Esc: Back up  |  Scroll: Zoom", 20, window.innerHeight - 18);
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText("Double-click: Drill In / Add  |  Drag ⚡: Connect  |  Esc: Back up  |  E: Edit  |  Del: Delete", 20, window.innerHeight - 18);
 
         ctx.restore();
     }
