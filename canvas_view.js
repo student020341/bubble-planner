@@ -146,6 +146,15 @@ class CanvasView {
                 const worldPos = this.camera.screenToWorld(e.clientX, e.clientY);
                 this.dragOffset = { x: hit.node.x - worldPos.x, y: hit.node.y - worldPos.y };
                 this.mode = "dragging_node";
+
+                this.actionRegistry.trigger("node:click", {
+                    store: this.store,
+                    canvasView: this,
+                    camera: this.camera,
+                    node: hit.node,
+                    worldPos,
+                    originalEvent: e
+                });
                 return;
             }
 
@@ -153,6 +162,15 @@ class CanvasView {
             this.selectedNode = null;
             this.selectedRelationship = null;
             this.mode = "panning";
+
+            const worldPos = this.camera.screenToWorld(e.clientX, e.clientY);
+            this.actionRegistry.trigger("canvas:click", {
+                store: this.store,
+                canvasView: this,
+                camera: this.camera,
+                worldPos,
+                originalEvent: e
+            });
         }
     }
 

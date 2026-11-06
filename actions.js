@@ -28,24 +28,24 @@ class ActionRegistry {
         /** @type {Map<string, EditorAction>} */
         this.actions = new Map();
 
-        /**
-         * Key/Trigger -> Action ID mapping.
-         * Triggers can be keyboard codes (e.g. 'KeyE', 'Escape')
-         * or interaction triggers (e.g. 'node:dblclick', 'canvas:dblclick').
-         * @type {Map<string, string>}
-         */
-        this.bindings = new Map([
-            // Mouse / canvas triggers
+        /** Default base triggers snapshot */
+        this.defaultBindings = [
             ["node:dblclick", "drillDown"],
             ["canvas:dblclick", "createBubble"],
-
-            // Keyboard shortcuts
             ["Escape", "drillUp"],
             ["KeyE", "editLabel"],
             ["KeyL", "editLabel"],
             ["Delete", "deleteSelection"],
             ["Backspace", "deleteSelection"]
-        ]);
+        ];
+
+        /** @type {Map<string, string>} Active Trigger -> Action ID mapping */
+        this.bindings = new Map(this.defaultBindings);
+    }
+
+    /** Reset bindings back to default configuration */
+    restoreDefaults() {
+        this.bindings = new Map(this.defaultBindings);
     }
 
     /**

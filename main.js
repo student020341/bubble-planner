@@ -26,6 +26,7 @@ actionRegistry.register({
     id: "jumpToLayer",
     title: "Jump To Layer",
     description: "Navigate directly to a specific ancestor bubble layer or root",
+    target: "global",
     execute: (ctx) => {
         store.currentParentId = ctx.targetParentId !== undefined ? ctx.targetParentId : null;
         store.notify();
@@ -38,6 +39,8 @@ actionRegistry.register({
     id: "drillDown",
     title: "Enter Bubble",
     description: "Drill down into the selected bubble layer",
+    target: "node",
+    isEnabled: (ctx) => Boolean(ctx.node || canvasView.selectedNode),
     execute: (ctx) => {
         const targetNode = ctx.node || canvasView.selectedNode;
         if (!targetNode) return;
@@ -51,6 +54,7 @@ actionRegistry.register({
     id: "drillUp",
     title: "Leave Bubble",
     description: "Navigate up to the parent bubble or root layer",
+    target: "global",
     execute: () => {
         store.leaveBubble();
         canvasView.selectedNode = null;
@@ -62,6 +66,7 @@ actionRegistry.register({
     id: "createBubble",
     title: "Create Bubble",
     description: "Create a new bubble at the current location",
+    target: "canvas",
     execute: (ctx) => {
         const pos = ctx.worldPos || { x: camera.x, y: camera.y };
         const label = window.prompt("New bubble name:", "New Item");
@@ -77,6 +82,7 @@ actionRegistry.register({
     id: "editLabel",
     title: "Edit Label",
     description: "Rename the currently selected bubble",
+    target: "node",
     isEnabled: () => Boolean(canvasView.selectedNode),
     execute: () => {
         const node = canvasView.selectedNode;
@@ -92,6 +98,7 @@ actionRegistry.register({
     id: "deleteSelection",
     title: "Delete Selection",
     description: "Delete the selected bubble or relationship",
+    target: "global",
     isEnabled: () => Boolean(canvasView.selectedNode || canvasView.selectedRelationship),
     execute: () => {
         if (canvasView.selectedNode) {
