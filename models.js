@@ -32,6 +32,7 @@
  * @property {number} to - Target node id.
  * @property {string} label - Action name / label.
  * @property {string} [description] - Optional details/notes.
+ * @property {boolean} [hidden] - Whether hidden from canvas render to reduce noise.
  * @property {PropertyMap} [properties] - Typed attributes on this action.
  */
 

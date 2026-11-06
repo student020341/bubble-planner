@@ -41,6 +41,15 @@ class CanvasView {
         /** @type {boolean} */
         this.isActionHandleHovered = false;
 
+        /** @type {number} Distance in screen pixels before mouse down counts as a drag */
+        this.dragThreshold = 20;
+
+        /** @type {{x: number, y: number}} Starting screen position when mouse went down */
+        this.mouseDownScreenPos = { x: 0, y: 0 };
+
+        /** @type {boolean} Whether movement has crossed dragThreshold */
+        this.hasExceededDragThreshold = false;
+
         /** @type {{x: number, y: number}} */
         this.dragOffset = { x: 0, y: 0 };
 
@@ -76,29 +85,40 @@ class CanvasView {
     /**
      * @param {number} screenX
      * @param {number} screenY
-     * @returns {{node: BubbleNode|null, hitHandle: boolean}}
+     * @returns {{node: BubbleNode|null, relationship: BubbleRelationship|null, hitHandle: boolean, hitInspectHandle: boolean}}
      */
     hitTest(screenX, screenY) {
         const worldPos = this.camera.screenToWorld(screenX, screenY);
         const nodes = this.store.getVisibleNodes();
 
-        // 1. Check action handle for hovered or selected node first (including bridge zone)
+        // 1. Check handles for hovered or selected node first (including bridge zone)
         const activeNode = this.hoveredNode || this.selectedNode;
         if (activeNode) {
             const m = this.computeNodeMetrics(activeNode);
-            const handleX = activeNode.x + m.width / 2 + 18;
+            const handleX = activeNode.x + m.width / 2 + 18; // ⚡ handle
+            const inspectX = activeNode.x + m.width / 2 + 44; // 📝 handle
             const handleY = activeNode.y;
-            const dHandle = Math.hypot(worldPos.x - handleX, worldPos.y - handleY);
 
-            // Handle circle + bridge rectangle between bubble right edge and handle
+            // Check 📝 inspect handle
+            const dInspect = Math.hypot(worldPos.x - inspectX, worldPos.y - handleY);
+            if (dInspect <= 12) {
+                return { node: activeNode, relationship: null, hitHandle: false, hitInspectHandle: true };
+            }
+
+            // Check ⚡ action handle
+            const dHandle = Math.hypot(worldPos.x - handleX, worldPos.y - handleY);
             const inBridge = (
                 worldPos.x >= activeNode.x + m.width / 2 - 4 &&
-                worldPos.x <= handleX + 14 &&
+                worldPos.x <= inspectX + 14 &&
                 Math.abs(worldPos.y - handleY) <= 14
             );
 
-            if (dHandle <= 14 || inBridge) {
-                return { node: activeNode, hitHandle: true };
+            if (dHandle <= 12 || (inBridge && worldPos.x <= handleX + 12)) {
+                return { node: activeNode, relationship: null, hitHandle: true, hitInspectHandle: false };
+            }
+
+            if (inBridge) {
+                return { node: activeNode, relationship: null, hitHandle: false, hitInspectHandle: false };
             }
         }
 
@@ -113,14 +133,42 @@ class CanvasView {
             const bottom = node.y + m.height / 2;
 
             if (worldPos.x >= left && worldPos.x <= right && worldPos.y >= top && worldPos.y <= bottom) {
-                return { node, hitHandle: false };
+                return { node, relationship: null, hitHandle: false, hitInspectHandle: false };
             }
         }
-        return { node: null, hitHandle: false };
+
+        // 3. Check action label hit boxes and unpin button
+        if (this.renderedLabelBoxes) {
+            for (const item of this.renderedLabelBoxes) {
+                if (
+                    worldPos.x >= item.box.x &&
+                    worldPos.x <= item.box.x + item.box.w &&
+                    worldPos.y >= item.box.y &&
+                    worldPos.y <= item.box.y + item.box.h
+                ) {
+                    const isPinned = item.rel.pinX !== undefined;
+                    // Check if clicked the unpin (📌) icon on right side of pill
+                    const hitUnpin = isPinned && (worldPos.x >= item.box.x + item.box.w - 20);
+                    return {
+                        node: null,
+                        relationship: item.rel,
+                        hitHandle: false,
+                        hitInspectHandle: false,
+                        hitUnpin,
+                        labelX: item.box.x + item.box.w / 2,
+                        labelY: item.box.y + item.box.h / 2
+                    };
+                }
+            }
+        }
+
+        return { node: null, relationship: null, hitHandle: false, hitInspectHandle: false, hitUnpin: false };
     }
 
     onMouseDown(e) {
         this.lastMousePos = { x: e.clientX, y: e.clientY };
+        this.mouseDownScreenPos = { x: e.clientX, y: e.clientY };
+        this.hasExceededDragThreshold = false;
 
         // Middle click or Space+click = Pan
         if (e.button === 1 || e.spaceKey) {
@@ -131,11 +179,36 @@ class CanvasView {
         if (e.button === 0) {
             const hit = this.hitTest(e.clientX, e.clientY);
 
+            if (hit.hitInspectHandle && hit.node) {
+                this.selectedNode = hit.node;
+                this.lastFocusedNode = hit.node;
+                this.selectedRelationship = null;
+                this.actionRegistry.execute("inspectEntity", {
+                    store: this.store,
+                    canvasView: this,
+                    camera: this.camera,
+                    node: hit.node
+                });
+                return;
+            }
+
             if (hit.hitHandle && hit.node) {
-                // Dragging from action handle (lightning)
                 this.mode = "connecting_action";
                 this.connectingSourceNode = hit.node;
                 this.connectingCurrentPoint = this.camera.screenToWorld(e.clientX, e.clientY);
+                return;
+            }
+
+            if (hit.relationship) {
+                this.selectedRelationship = hit.relationship;
+                this.selectedNode = null;
+                this.mode = "idle";
+
+                if (window.uiController) {
+                    if (window.uiController.isInspectorOpen || window.uiController.autoOpenInspector) {
+                        window.uiController.openInspector(hit.relationship);
+                    }
+                }
                 return;
             }
 
@@ -146,6 +219,12 @@ class CanvasView {
                 const worldPos = this.camera.screenToWorld(e.clientX, e.clientY);
                 this.dragOffset = { x: hit.node.x - worldPos.x, y: hit.node.y - worldPos.y };
                 this.mode = "dragging_node";
+
+                if (window.uiController) {
+                    if (window.uiController.isInspectorOpen || window.uiController.autoOpenInspector) {
+                        window.uiController.openInspector(hit.node);
+                    }
+                }
 
                 this.actionRegistry.trigger("node:click", {
                     store: this.store,
@@ -163,6 +242,10 @@ class CanvasView {
             this.selectedRelationship = null;
             this.mode = "panning";
 
+            if (window.uiController && window.uiController.autoCloseInspector) {
+                window.uiController.closeInspector();
+            }
+
             const worldPos = this.camera.screenToWorld(e.clientX, e.clientY);
             this.actionRegistry.trigger("canvas:click", {
                 store: this.store,
@@ -178,6 +261,9 @@ class CanvasView {
         const dx = e.clientX - this.lastMousePos.x;
         const dy = e.clientY - this.lastMousePos.y;
         this.lastMousePos = { x: e.clientX, y: e.clientY };
+
+        const totalDist = Math.hypot(e.clientX - this.mouseDownScreenPos.x, e.clientY - this.mouseDownScreenPos.y);
+        this.hasExceededDragThreshold = (totalDist >= this.dragThreshold);
 
         if (this.mode === "panning") {
             this.camera.pan(dx, dy);
@@ -201,23 +287,36 @@ class CanvasView {
         const hit = this.hitTest(e.clientX, e.clientY);
         this.hoveredNode = hit.node;
         this.isActionHandleHovered = hit.hitHandle;
-        this.canvas.style.cursor = hit.hitHandle ? "crosshair" : hit.node ? "pointer" : "default";
+        this.canvas.style.cursor = (hit.hitHandle || hit.hitInspectHandle) ? "pointer" : hit.relationship ? "pointer" : hit.node ? "grab" : "default";
     }
 
     onMouseUp(e) {
         if (this.mode === "connecting_action") {
-            const hit = this.hitTest(e.clientX, e.clientY);
-            if (hit.node && this.connectingSourceNode && hit.node.id !== this.connectingSourceNode.id) {
-                const actionLabel = window.prompt("Action label (e.g. delivery, call, send):", "action");
-                if (actionLabel) {
-                    this.store.addRelationship(this.connectingSourceNode.id, hit.node.id, actionLabel);
+            if (!this.hasExceededDragThreshold) {
+                // Treated as a CLICK on ⚡ handle: focus node and open inspector on "Connect to Any Bubble"
+                if (this.connectingSourceNode) {
+                    this.selectedNode = this.connectingSourceNode;
+                    this.lastFocusedNode = this.connectingSourceNode;
+                    this.selectedRelationship = null;
+                    if (window.uiController) {
+                        window.uiController.openInspector(this.connectingSourceNode, { focusSearch: true });
+                    }
+                }
+            } else {
+                // Treated as a DRAG to connect: test target node
+                const hit = this.hitTest(e.clientX, e.clientY);
+                if (hit.node && this.connectingSourceNode && hit.node.id !== this.connectingSourceNode.id) {
+                    const actionLabel = window.prompt("Action label (e.g. delivery, call, send):", "action");
+                    if (actionLabel) {
+                        this.store.addRelationship(this.connectingSourceNode.id, hit.node.id, actionLabel);
+                    }
                 }
             }
             this.connectingSourceNode = null;
             this.connectingCurrentPoint = null;
         }
 
-        if (this.mode === "dragging_node") {
+        if (this.mode === "dragging_node" || this.mode === "dragging_action_label") {
             this.store.notify();
         }
 
@@ -308,177 +407,273 @@ class CanvasView {
     }
 
     renderRelationships(ctx) {
-        const rels = this.store.getVisibleRelationships();
+        this.renderedLabelBoxes = [];
+        const allRels = this.store.getVisibleRelationships();
+        const rels = allRels.filter(r => !r.hidden);
+
         const idToNode = new Map(this.store.doc.nodes.map(n => [n.id, n]));
         const visibleIds = new Set(this.store.getVisibleNodes().map(n => n.id));
 
-        // Group intra-layer relationships by node pair
+        // Group intra-layer relationships by undirected pair (nodeA < nodeB)
         const pairGroups = new Map();
+        const crossLayerRels = [];
+
         for (const rel of rels) {
             const isFromVis = visibleIds.has(rel.from);
             const isToVis = visibleIds.has(rel.to);
+
             if (isFromVis && isToVis) {
-                const pairKey = rel.from < rel.to ? `${rel.from}-${rel.to}` : `${rel.to}-${rel.from}`;
-                if (!pairGroups.has(pairKey)) pairGroups.set(pairKey, []);
-                pairGroups.get(pairKey).push(rel);
+                const nodeAId = Math.min(rel.from, rel.to);
+                const nodeBId = Math.max(rel.from, rel.to);
+                const pairKey = `${nodeAId}-${nodeBId}`;
+
+                if (!pairGroups.has(pairKey)) {
+                    pairGroups.set(pairKey, {
+                        nodeA: idToNode.get(nodeAId),
+                        nodeB: idToNode.get(nodeBId),
+                        rels: []
+                    });
+                }
+                pairGroups.get(pairKey).rels.push(rel);
+            } else {
+                crossLayerRels.push(rel);
             }
         }
 
-        for (const rel of rels) {
+        // Pass 1: Draw Straight Directional Trunk Lines (1 or 2 lines per pair)
+        const pendingLabels = [];
+
+        for (const pair of pairGroups.values()) {
+            const { nodeA, nodeB, rels: groupRels } = pair;
+            if (!nodeA || !nodeB) continue;
+
+            // Check which directional flows exist in this pair
+            const hasAtoB = groupRels.some(r => r.from === nodeA.id);
+            const hasBtoA = groupRels.some(r => r.from === nodeB.id);
+            const isBidirectional = hasAtoB && hasBtoA;
+
+            const dx = nodeB.x - nodeA.x;
+            const dy = nodeB.y - nodeA.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            const nx = -dy / dist; // Perpendicular normal
+            const ny = dx / dist;
+
+            const gutter = isBidirectional ? 8 : 0;
+
+            // Draw A -> B trunk line if present
+            if (hasAtoB) {
+                const color = this.computeTrunkColor(nodeA.id, nodeB.id, groupRels);
+                this.drawStraightTrunk(ctx, nodeA, nodeB, nx * gutter, ny * gutter, color);
+            }
+
+            // Draw B -> A trunk line if present
+            if (hasBtoA) {
+                const color = this.computeTrunkColor(nodeB.id, nodeA.id, groupRels);
+                this.drawStraightTrunk(ctx, nodeB, nodeA, -nx * gutter, -ny * gutter, color);
+            }
+
+            // Collect labels in order: stack vertically at (midX, midY)
+            const midX = (nodeA.x + nodeB.x) / 2;
+            const midY = (nodeA.y + nodeB.y) / 2;
+            const total = groupRels.length;
+            const verticalStep = 24;
+
+            for (let i = 0; i < total; i++) {
+                const rel = groupRels[i];
+                const isFromA = rel.from === nodeA.id;
+                const rungOffset = (i - (total - 1) / 2) * verticalStep;
+                const labelColor = this.computeActionColor(rel);
+
+                pendingLabels.push({
+                    rel,
+                    label: `${isFromA ? "→" : "←"} ${rel.label}`,
+                    x: midX,
+                    y: midY + rungOffset,
+                    color: labelColor
+                });
+            }
+        }
+
+        // Cross-layer descriptors
+        for (const rel of crossLayerRels) {
             const fromNode = idToNode.get(rel.from);
             const toNode = idToNode.get(rel.to);
             if (!fromNode || !toNode) continue;
 
-            const isFromVisible = visibleIds.has(rel.from);
-            const isToVisible = visibleIds.has(rel.to);
+            const isFromVis = visibleIds.has(rel.from);
+            const visibleNode = isFromVis ? fromNode : toNode;
+            const otherNode = isFromVis ? toNode : fromNode;
+            const isIncoming = !isFromVis;
 
-            // Determine action color theme based on perspective node (selectedNode or lastFocusedNode):
-            const perspectiveNode = this.selectedNode || this.lastFocusedNode;
-            let color;
+            pendingLabels.push({
+                isCrossLayer: true,
+                node: visibleNode,
+                otherNode,
+                label: rel.label,
+                isIncoming,
+                rel
+            });
+        }
 
-            if (perspectiveNode) {
-                const isActive = Boolean(this.selectedNode);
-                if (rel.from === perspectiveNode.id) {
-                    // Outgoing from focused (Bright Blue)
-                    color = {
-                        stroke: isActive ? "rgba(56, 189, 248, 0.95)" : "rgba(56, 189, 248, 0.75)",
-                        fill: "#38bdf8",
-                        border: "rgba(56, 189, 248, 0.6)",
-                        text: "#bae6fd",
-                        lineWidth: isActive ? 2.5 : 2
-                    };
-                } else if (rel.to === perspectiveNode.id) {
-                    // Incoming to focused (Bright Coral)
-                    color = {
-                        stroke: isActive ? "rgba(251, 146, 60, 0.95)" : "rgba(251, 146, 60, 0.75)",
-                        fill: "#fb923c",
-                        border: "rgba(251, 146, 60, 0.6)",
-                        text: "#fed7aa",
-                        lineWidth: isActive ? 2.5 : 2
-                    };
-                } else {
-                    // Option 1: Unrelated action retains soft, subtle directional color (not dead gray)
-                    const isForward = rel.from < rel.to;
-                    color = isForward ? {
-                        stroke: "rgba(56, 189, 248, 0.35)",
-                        fill: "rgba(56, 189, 248, 0.4)",
-                        border: "rgba(56, 189, 248, 0.25)",
-                        text: "#7dd3fc",
-                        lineWidth: 1.5
-                    } : {
-                        stroke: "rgba(251, 146, 60, 0.35)",
-                        fill: "rgba(251, 146, 60, 0.4)",
-                        border: "rgba(251, 146, 60, 0.25)",
-                        text: "#fdba74",
-                        lineWidth: 1.5
-                    };
-                }
+        // Pass 2: Draw all label pills ON TOP of all trunk lines
+        for (const desc of pendingLabels) {
+            if (desc.isCrossLayer) {
+                this.drawCrossLayerIndicator(ctx, desc.node, desc.otherNode, desc.label, desc.isIncoming, desc.rel);
             } else {
-                // No node has ever been focused yet: standard direction colors
-                if (rel.from < rel.to) {
-                    color = { stroke: "rgba(56, 189, 248, 0.8)", fill: "#38bdf8", border: "rgba(56, 189, 248, 0.5)", text: "#bae6fd", lineWidth: 2 };
-                } else {
-                    color = { stroke: "rgba(251, 146, 60, 0.8)", fill: "#fb923c", border: "rgba(251, 146, 60, 0.5)", text: "#fed7aa", lineWidth: 2 };
-                }
-            }
-
-            // Intra-layer relationship
-            if (isFromVisible && isToVisible) {
-                const pairKey = rel.from < rel.to ? `${rel.from}-${rel.to}` : `${rel.to}-${rel.from}`;
-                const group = pairGroups.get(pairKey) || [rel];
-                const index = group.indexOf(rel);
-                const total = group.length;
-
-                // Compute curvature offset: 0 if single; alternating curves if multiple
-                let curvature = 0;
-                if (total > 1) {
-                    const step = 36;
-                    const sign = (index % 2 === 0 ? 1 : -1) * (rel.from < rel.to ? 1 : -1);
-                    const magnitude = Math.ceil((index + 1) / 2) * step;
-                    curvature = sign * magnitude;
-                }
-
-                this.drawArrow(ctx, fromNode, toNode, rel.label, curvature, color);
-            } else {
-                // Cross-layer relationship indicator
-                const visibleNode = isFromVisible ? fromNode : toNode;
-                const otherNode = isFromVisible ? toNode : fromNode;
-                const isIncoming = !isFromVisible;
-                this.drawCrossLayerIndicator(ctx, visibleNode, otherNode, rel.label, isIncoming);
+                this.drawCenteredPillLabel(ctx, desc);
             }
         }
     }
 
-    drawArrow(ctx, from, to, label, curvature = 0, color = null) {
-        ctx.save();
-        const strokeColor = color ? color.stroke : "rgba(100, 200, 255, 0.75)";
-        const fillColor = color ? color.fill : "rgba(100, 200, 255, 0.9)";
-        const borderColor = color ? color.border : "rgba(100, 200, 255, 0.4)";
-        const textColor = color ? color.text : "#ddd";
+    computeTrunkColor(fromId, toId, groupRels) {
+        const perspectiveNode = this.selectedNode || this.lastFocusedNode;
+        const isActive = Boolean(this.selectedNode);
 
-        ctx.strokeStyle = strokeColor;
-        ctx.fillStyle = fillColor;
-        ctx.lineWidth = (color && color.lineWidth) ? color.lineWidth : 2;
-
-        const mTo = this.computeNodeMetrics(to);
-        const targetRadius = mTo.width / 2;
-
-        const dx = to.x - from.x;
-        const dy = to.y - from.y;
-        const dist = Math.hypot(dx, dy) || 1;
-        const nx = -dy / dist;
-        const ny = dx / dist;
-
-        const midX = (from.x + to.x) / 2;
-        const midY = (from.y + to.y) / 2;
-        const ctrlX = midX + nx * curvature;
-        const ctrlY = midY + ny * curvature;
-
-        const tangentAngle = Math.atan2(to.y - ctrlY, to.x - ctrlX);
-        const endX = to.x - Math.cos(tangentAngle) * (targetRadius + 6);
-        const endY = to.y - Math.sin(tangentAngle) * (mTo.height / 2 + 6);
-
-        // Path
-        ctx.beginPath();
-        ctx.moveTo(from.x, from.y);
-        if (curvature === 0) {
-            ctx.lineTo(endX, endY);
-        } else {
-            ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
+        // If one of the rels in this trunk is actively selected
+        const hasSelectedRel = groupRels.some(r => r.id === (this.selectedRelationship && this.selectedRelationship.id) && r.from === fromId);
+        if (hasSelectedRel) {
+            return { stroke: "#38bdf8", fill: "#38bdf8", lineWidth: 3 };
         }
+
+        if (perspectiveNode) {
+            if (fromId === perspectiveNode.id) {
+                return { stroke: isActive ? "rgba(56, 189, 248, 0.95)" : "rgba(56, 189, 248, 0.75)", fill: "#38bdf8", lineWidth: 2.5 };
+            } else if (toId === perspectiveNode.id) {
+                return { stroke: isActive ? "rgba(251, 146, 60, 0.95)" : "rgba(251, 146, 60, 0.75)", fill: "#fb923c", lineWidth: 2.5 };
+            } else {
+                return fromId < toId
+                    ? { stroke: "rgba(56, 189, 248, 0.35)", fill: "rgba(56, 189, 248, 0.4)", lineWidth: 1.5 }
+                    : { stroke: "rgba(251, 146, 60, 0.35)", fill: "rgba(251, 146, 60, 0.4)", lineWidth: 1.5 };
+            }
+        } else {
+            return fromId < toId
+                ? { stroke: "rgba(56, 189, 248, 0.8)", fill: "#38bdf8", lineWidth: 2 }
+                : { stroke: "rgba(251, 146, 60, 0.8)", fill: "#fb923c", lineWidth: 2 };
+        }
+    }
+
+    computeActionColor(rel) {
+        const perspectiveNode = this.selectedNode || this.lastFocusedNode;
+        const isActive = Boolean(this.selectedNode);
+
+        if (rel === this.selectedRelationship) {
+            return { stroke: "#38bdf8", fill: "#38bdf8", border: "#00c3ff", text: "#ffffff" };
+        }
+
+        if (perspectiveNode) {
+            if (rel.from === perspectiveNode.id) {
+                return {
+                    stroke: isActive ? "rgba(56, 189, 248, 0.95)" : "rgba(56, 189, 248, 0.75)",
+                    border: "rgba(56, 189, 248, 0.6)",
+                    text: "#bae6fd"
+                };
+            } else if (rel.to === perspectiveNode.id) {
+                return {
+                    stroke: isActive ? "rgba(251, 146, 60, 0.95)" : "rgba(251, 146, 60, 0.75)",
+                    border: "rgba(251, 146, 60, 0.6)",
+                    text: "#fed7aa"
+                };
+            } else {
+                const isForward = rel.from < rel.to;
+                return isForward ? {
+                    stroke: "rgba(56, 189, 248, 0.35)",
+                    border: "rgba(56, 189, 248, 0.35)",
+                    text: "#7dd3fc"
+                } : {
+                    stroke: "rgba(251, 146, 60, 0.35)",
+                    border: "rgba(251, 146, 60, 0.35)",
+                    text: "#fdba74"
+                };
+            }
+        } else {
+            return rel.from < rel.to
+                ? { stroke: "rgba(56, 189, 248, 0.8)", border: "rgba(56, 189, 248, 0.5)", text: "#bae6fd" }
+                : { stroke: "rgba(251, 146, 60, 0.8)", border: "rgba(251, 146, 60, 0.5)", text: "#fed7aa" };
+        }
+    }
+
+    drawStraightTrunk(ctx, fromNode, toNode, offsetNormalX, offsetNormalY, color) {
+        ctx.save();
+        ctx.strokeStyle = color.stroke;
+        ctx.fillStyle = color.fill;
+        ctx.lineWidth = color.lineWidth || 2;
+
+        const mTo = this.computeNodeMetrics(toNode);
+
+        const dx = toNode.x - fromNode.x;
+        const dy = toNode.y - fromNode.y;
+        const angle = Math.atan2(dy, dx);
+
+        const startX = fromNode.x + offsetNormalX;
+        const startY = fromNode.y + offsetNormalY;
+
+        // Accurate pill edge intersection for target node
+        // Compute distance from node center to boundary along line angle
+        const cosA = Math.abs(Math.cos(angle));
+        const sinA = Math.abs(Math.sin(angle));
+        const halfW = mTo.width / 2;
+        const halfH = mTo.height / 2;
+        // Clamp to rounded box boundary
+        const stopDist = Math.min(halfW / (cosA || 0.001), halfH / (sinA || 0.001)) + 5;
+
+        const endX = (toNode.x + offsetNormalX) - Math.cos(angle) * stopDist;
+        const endY = (toNode.y + offsetNormalY) - Math.sin(angle) * stopDist;
+
+        // Straight line
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(endX, endY);
         ctx.stroke();
 
-        // Arrow head
+        // Arrow head (aligned strictly with the line vector)
         ctx.beginPath();
         ctx.moveTo(endX, endY);
-        ctx.lineTo(endX - 10 * Math.cos(tangentAngle - Math.PI / 6), endY - 10 * Math.sin(tangentAngle - Math.PI / 6));
-        ctx.lineTo(endX - 10 * Math.cos(tangentAngle + Math.PI / 6), endY - 10 * Math.sin(tangentAngle + Math.PI / 6));
+        ctx.lineTo(endX - 9 * Math.cos(angle - Math.PI / 6), endY - 9 * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(endX - 9 * Math.cos(angle + Math.PI / 6), endY - 9 * Math.sin(angle + Math.PI / 6));
         ctx.closePath();
         ctx.fill();
-
-        // Label
-        if (label) {
-            const labelX = curvature === 0 ? midX : 0.25 * from.x + 0.5 * ctrlX + 0.25 * to.x;
-            const labelY = curvature === 0 ? midY : 0.25 * from.y + 0.5 * ctrlY + 0.25 * to.y;
-
-            ctx.font = "11px system-ui, sans-serif";
-            const textW = ctx.measureText(label).width;
-
-            ctx.fillStyle = "#111";
-            ctx.fillRect(labelX - textW / 2 - 4, labelY - 8, textW + 8, 16);
-            ctx.strokeStyle = borderColor;
-            ctx.strokeRect(labelX - textW / 2 - 4, labelY - 8, textW + 8, 16);
-
-            ctx.fillStyle = textColor;
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.fillText(label, labelX, labelY);
-        }
 
         ctx.restore();
     }
 
-    drawCrossLayerIndicator(ctx, node, otherNode, label, isIncoming) {
+    drawCenteredPillLabel(ctx, desc) {
+        const { label, x, y, color, rel } = desc;
+        if (!label) return;
+
+        ctx.save();
+        const borderColor = color ? color.border : "rgba(100, 200, 255, 0.4)";
+        const textColor = color ? color.text : "#ddd";
+
+        ctx.font = "11px system-ui, sans-serif";
+        const textW = ctx.measureText(label).width;
+
+        const isSelected = rel && rel === this.selectedRelationship;
+        const pillW = textW + 16;
+        const pillH = 18;
+        const pillX = x - pillW / 2;
+        const pillY = y - pillH / 2;
+
+        if (rel) {
+            this.renderedLabelBoxes.push({ rel, box: { x: pillX, y: pillY, w: pillW, h: pillH } });
+        }
+
+        // Solid background completely masks trunk lines passing underneath
+        ctx.fillStyle = isSelected ? "#0f172a" : "#0a0f16";
+        ctx.fillRect(pillX, pillY, pillW, pillH);
+
+        ctx.strokeStyle = isSelected ? "#00c3ff" : borderColor;
+        ctx.lineWidth = isSelected ? 2 : 1;
+        ctx.strokeRect(pillX, pillY, pillW, pillH);
+
+        ctx.fillStyle = isSelected ? "#38bdf8" : textColor;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, x, y);
+
+        ctx.restore();
+    }
+
+    drawCrossLayerIndicator(ctx, node, otherNode, label, isIncoming, rel = null) {
         ctx.save();
         ctx.font = "11px system-ui, sans-serif";
         const tag = isIncoming ? `← ${label} (from ${otherNode.label})` : `→ ${label} (to ${otherNode.label})`;
@@ -487,15 +682,31 @@ class CanvasView {
         const m = this.computeNodeMetrics(node);
         const yOffset = isIncoming ? -m.height / 2 - 14 : m.height / 2 + 14;
 
-        ctx.fillStyle = "rgba(255, 180, 50, 0.2)";
-        ctx.strokeStyle = "rgba(255, 180, 50, 0.6)";
-        ctx.lineWidth = 1;
-        ctx.setLineDash([3, 3]);
+        const isSelected = rel && rel === this.selectedRelationship;
 
-        ctx.fillRect(node.x - tw / 2 - 6, node.y + yOffset - 9, tw + 12, 18);
-        ctx.strokeRect(node.x - tw / 2 - 6, node.y + yOffset - 9, tw + 12, 18);
+        const badgeX = node.x - tw / 2 - 6;
+        const badgeY = node.y + yOffset - 9;
+        const badgeW = tw + 12;
+        const badgeH = 18;
 
-        ctx.fillStyle = "#ffc060";
+        if (rel) {
+            this.renderedLabelBoxes.push({ rel, box: { x: badgeX, y: badgeY, w: badgeW, h: badgeH } });
+        }
+
+        // Blue if outgoing, Coral if incoming
+        const bgColor = isSelected ? "#0f172a" : isIncoming ? "rgba(251, 146, 60, 0.15)" : "rgba(56, 189, 248, 0.15)";
+        const borderColor = isSelected ? "#00c3ff" : isIncoming ? "rgba(251, 146, 60, 0.6)" : "rgba(56, 189, 248, 0.6)";
+        const textColor = isSelected ? "#38bdf8" : isIncoming ? "#fed7aa" : "#bae6fd";
+
+        ctx.fillStyle = bgColor;
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = isSelected ? 2 : 1;
+        if (!isSelected) ctx.setLineDash([3, 3]);
+
+        ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
+        ctx.strokeRect(badgeX, badgeY, badgeW, badgeH);
+
+        ctx.fillStyle = textColor;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(tag, node.x, node.y + yOffset);
@@ -504,14 +715,50 @@ class CanvasView {
 
     renderConnectingLine(ctx) {
         ctx.save();
-        ctx.strokeStyle = "#ffdd44";
-        ctx.lineWidth = 2;
-        ctx.setLineDash([6, 4]);
+        const m = this.computeNodeMetrics(this.connectingSourceNode);
+        const handleX = this.connectingSourceNode.x + m.width / 2 + 18;
+        const handleY = this.connectingSourceNode.y;
 
-        ctx.beginPath();
-        ctx.moveTo(this.connectingSourceNode.x, this.connectingSourceNode.y);
-        ctx.lineTo(this.connectingCurrentPoint.x, this.connectingCurrentPoint.y);
-        ctx.stroke();
+        const worldThreshold = this.dragThreshold / this.camera.zoom;
+
+        if (!this.hasExceededDragThreshold) {
+            // Inside Deadzone: Draw faint deadzone boundary circle
+            ctx.strokeStyle = "rgba(255, 220, 60, 0.4)";
+            ctx.fillStyle = "rgba(255, 220, 60, 0.05)";
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([3, 3]);
+
+            ctx.beginPath();
+            ctx.arc(handleX, handleY, worldThreshold, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            // Soft tether to cursor
+            ctx.strokeStyle = "rgba(56, 189, 248, 0.4)";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.moveTo(handleX, handleY);
+            ctx.lineTo(this.connectingCurrentPoint.x, this.connectingCurrentPoint.y);
+            ctx.stroke();
+        } else {
+            // Exceeded Deadzone: Active drag-to-connect line
+            ctx.strokeStyle = "#ffdd44";
+            ctx.lineWidth = 2.5;
+            ctx.setLineDash([6, 4]);
+
+            ctx.beginPath();
+            ctx.moveTo(handleX, handleY);
+            ctx.lineTo(this.connectingCurrentPoint.x, this.connectingCurrentPoint.y);
+            ctx.stroke();
+
+            // Drag target ring under cursor
+            ctx.fillStyle = "rgba(255, 220, 60, 0.8)";
+            ctx.beginPath();
+            ctx.arc(this.connectingCurrentPoint.x, this.connectingCurrentPoint.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
         ctx.restore();
     }
 
@@ -559,11 +806,14 @@ class CanvasView {
             ctx.fillText(childCount.toString(), badgeX, badgeY);
         }
 
-        // Action Connector Handle (lightning bolt icon on right)
+        // Contextual Handles (Action ⚡ and Inspect 📝 on right)
         if (isSelected || isHovered) {
             const handleX = node.x + m.width / 2 + 18;
+            const inspectX = node.x + m.width / 2 + 42;
             const handleY = node.y;
-            ctx.fillStyle = this.isActionHandleHovered && isHovered ? "#ffdd44" : "rgba(255, 220, 60, 0.7)";
+
+            // 1. Action Handle (⚡)
+            ctx.fillStyle = this.isActionHandleHovered && isHovered ? "#ffdd44" : "rgba(255, 220, 60, 0.75)";
             ctx.beginPath();
             ctx.arc(handleX, handleY, 11, 0, Math.PI * 2);
             ctx.fill();
@@ -573,6 +823,16 @@ class CanvasView {
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.fillText("⚡", handleX, handleY);
+
+            // 2. Inspect Handle (📝)
+            ctx.fillStyle = "rgba(56, 189, 248, 0.8)";
+            ctx.beginPath();
+            ctx.arc(inspectX, handleY, 11, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = "#000";
+            ctx.font = "11px sans-serif";
+            ctx.fillText("📝", inspectX, handleY);
         }
 
         ctx.restore();

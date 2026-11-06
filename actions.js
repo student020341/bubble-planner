@@ -33,6 +33,7 @@ class ActionRegistry {
             ["node:dblclick", "drillDown"],
             ["canvas:dblclick", "createBubble"],
             ["Escape", "drillUp"],
+            ["KeyI", "inspectEntity"],
             ["KeyE", "editLabel"],
             ["KeyL", "editLabel"],
             ["Delete", "deleteSelection"],

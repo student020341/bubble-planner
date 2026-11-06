@@ -19,6 +19,7 @@ const canvasView = new CanvasView(canvas, store, camera, actionRegistry);
 
 // 5. Initialize UI Controller (interactive breadcrumbs, overlays)
 const uiController = new UIController(store, canvasView, camera, actionRegistry);
+window.uiController = uiController;
 
 // --- Register Core Named Actions ---
 
@@ -32,6 +33,20 @@ actionRegistry.register({
         store.notify();
         canvasView.selectedNode = null;
         camera.fitToNodes(store.getVisibleNodes());
+    }
+});
+
+actionRegistry.register({
+    id: "inspectEntity",
+    title: "Inspect Item",
+    description: "Open inspector drawer to view/edit properties and details",
+    target: "node",
+    isEnabled: () => Boolean(canvasView.selectedNode || canvasView.selectedRelationship),
+    execute: (ctx) => {
+        const target = ctx.node || canvasView.selectedNode || canvasView.selectedRelationship;
+        if (target) {
+            uiController.toggleInspector(target);
+        }
     }
 });
 
@@ -118,8 +133,17 @@ actionRegistry.register({
 // --- Keyboard Event Router ---
 
 window.addEventListener("keydown", (e) => {
-    // Ignore key shortcuts if user is typing in an input or textarea
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+    // Ignore key shortcuts if user is typing in an input, textarea, select, or drawer element
+    const isEditing = (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement ||
+        e.target.isContentEditable ||
+        Boolean(e.target.closest("#inspector-drawer")) ||
+        Boolean(e.target.closest("#settings-drawer"))
+    );
+
+    if (isEditing) {
         return;
     }
 

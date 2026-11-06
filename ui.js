@@ -36,6 +36,12 @@ class UIController {
         /** @type {boolean} */
         this.isSettingsOpen = false;
 
+        /** @type {boolean} Whether to automatically open inspector when an entity is focused */
+        this.autoOpenInspector = false;
+
+        /** @type {boolean} Whether to automatically close inspector when clicking off / unfocusing */
+        this.autoCloseInspector = false;
+
         /** @type {string|null} Action ID currently recording a new trigger */
         this.recordingActionId = null;
 
@@ -43,7 +49,19 @@ class UIController {
         this.store.subscribe(() => {
             this.renderBreadcrumbs();
             if (this.isInspectorOpen && this.inspectedEntity) {
-                this.renderInspectorContent();
+                // If entity was deleted, close
+                const exists = this.store.doc.nodes.some(n => n.id === this.inspectedEntity.id) ||
+                               this.store.doc.relationships.some(r => r.id === this.inspectedEntity.id);
+                if (!exists) {
+                    this.closeInspector();
+                    return;
+                }
+
+                // Do not wipe and rebuild inspector DOM while user is actively focused/typing in it
+                const isTypingInInspector = this.inspectorDrawer && this.inspectorDrawer.contains(document.activeElement);
+                if (!isTypingInInspector) {
+                    this.renderInspectorContent();
+                }
             }
         });
     }
@@ -107,9 +125,37 @@ class UIController {
         `;
         this.topBar.appendChild(this.breadcrumbContainer);
 
+        // Right side top-bar actions
+        const rightBar = document.createElement("div");
+        rightBar.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+        const inspectBtn = document.createElement("button");
+        inspectBtn.innerHTML = "📝 Inspect (I)";
+        inspectBtn.title = "Inspect selected item";
+        inspectBtn.style.cssText = `
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            border-radius: 6px;
+            color: #cbd5e1;
+            font-size: 12px;
+            padding: 4px 10px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        `;
+        inspectBtn.addEventListener("click", () => {
+            const target = this.canvasView.selectedNode || this.canvasView.selectedRelationship;
+            if (target) {
+                this.toggleInspector(target);
+            } else {
+                window.alert("Select a bubble or connection first to inspect it.");
+            }
+        });
+        rightBar.appendChild(inspectBtn);
+        this.topBar.appendChild(rightBar);
+
         document.body.appendChild(this.topBar);
 
-        // Settings Drawer Container
+        // Settings Drawer Container (Left edge)
         this.settingsDrawer = document.createElement("div");
         this.settingsDrawer.id = "settings-drawer";
         this.settingsDrawer.style.cssText = `
@@ -130,6 +176,28 @@ class UIController {
             overflow-y: auto;
         `;
         document.body.appendChild(this.settingsDrawer);
+
+        // Inspector Drawer Container (Right edge)
+        this.inspectorDrawer = document.createElement("div");
+        this.inspectorDrawer.id = "inspector-drawer";
+        this.inspectorDrawer.style.cssText = `
+            position: fixed;
+            top: 44px;
+            right: 0;
+            bottom: 0;
+            width: 380px;
+            background: rgba(15, 23, 42, 0.96);
+            backdrop-filter: blur(12px);
+            border-left: 1px solid rgba(51, 65, 85, 0.8);
+            box-shadow: -4px 0 24px rgba(0, 0, 0, 0.6);
+            display: none;
+            flex-direction: column;
+            z-index: 20;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #e2e8f0;
+            overflow-y: auto;
+        `;
+        document.body.appendChild(this.inspectorDrawer);
 
         this.renderBreadcrumbs();
     }
@@ -208,6 +276,648 @@ class UIController {
         return btn;
     }
 
+    // --- Inspector Drawer ---
+
+    toggleInspector(entity = null) {
+        if (this.isInspectorOpen && (!entity || entity === this.inspectedEntity)) {
+            this.closeInspector();
+        } else {
+            this.openInspector(entity || this.canvasView.selectedNode || this.canvasView.selectedRelationship);
+        }
+    }
+
+    openInspector(entity, options = {}) {
+        if (!entity) return;
+        this.inspectedEntity = entity;
+        this.isInspectorOpen = true;
+        this.inspectorDrawer.style.display = "flex";
+        this.renderInspectorContent();
+
+        if (options.focusSearch) {
+            setTimeout(() => {
+                const searchInput = this.inspectorDrawer.querySelector("input[placeholder*='Search name or namespace']");
+                if (searchInput) {
+                    searchInput.focus();
+                    searchInput.select();
+                }
+            }, 50);
+        }
+    }
+
+    closeInspector() {
+        this.isInspectorOpen = false;
+        this.inspectedEntity = null;
+        if (this.inspectorDrawer) this.inspectorDrawer.style.display = "none";
+    }
+
+    renderInspectorContent() {
+        if (!this.inspectorDrawer || !this.inspectedEntity) return;
+        this.inspectorDrawer.innerHTML = "";
+
+        const entity = this.inspectedEntity;
+        const isNode = entity.hasOwnProperty("x"); // nodes have x, y; rels have from, to
+
+        // Header
+        const header = document.createElement("div");
+        header.style.cssText = `
+            padding: 16px;
+            border-bottom: 1px solid rgba(51, 65, 85, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        `;
+
+        const titleBox = document.createElement("div");
+        titleBox.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+        const badge = document.createElement("span");
+        badge.textContent = isNode ? "Bubble" : "Action";
+        badge.style.cssText = `
+            background: ${isNode ? "rgba(56, 189, 248, 0.2)" : "rgba(251, 146, 60, 0.2)"};
+            color: ${isNode ? "#38bdf8" : "#fb923c"};
+            border: 1px solid ${isNode ? "rgba(56, 189, 248, 0.4)" : "rgba(251, 146, 60, 0.4)"};
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        `;
+
+        const title = document.createElement("span");
+        title.textContent = entity.label;
+        title.style.cssText = "font-size: 15px; font-weight: 600; color: #f8fafc;";
+
+        titleBox.appendChild(badge);
+        titleBox.appendChild(title);
+
+        const closeBtn = document.createElement("button");
+        closeBtn.innerHTML = "✕";
+        closeBtn.style.cssText = `
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            font-size: 16px;
+            cursor: pointer;
+            padding: 4px 8px;
+        `;
+        closeBtn.addEventListener("click", () => this.closeInspector());
+
+        header.appendChild(titleBox);
+        header.appendChild(closeBtn);
+        this.inspectorDrawer.appendChild(header);
+
+        // Body
+        const body = document.createElement("div");
+        body.style.cssText = "padding: 16px; display: flex; flex-direction: column; gap: 20px;";
+
+        // 0. If Action: Render From -> To Navigation Jump Buttons
+        if (!isNode) {
+            const idToNode = new Map(this.store.doc.nodes.map(n => [n.id, n]));
+            const fromNode = idToNode.get(entity.from);
+            const toNode = idToNode.get(entity.to);
+
+            const jumpRow = document.createElement("div");
+            jumpRow.style.cssText = "display: flex; gap: 8px;";
+
+            const createJumpBtn = (labelPrefix, targetNode, color) => {
+                const btn = document.createElement("button");
+                const nodeName = targetNode ? targetNode.label : `#${targetNode ? targetNode.id : "?"}`;
+                btn.innerHTML = `<span style="color:#94a3b8">${labelPrefix}:</span> <strong>${nodeName}</strong> ↗`;
+                btn.style.cssText = `
+                    flex: 1;
+                    background: rgba(30, 41, 59, 0.7);
+                    border: 1px solid rgba(51, 65, 85, 0.7);
+                    border-left: 3px solid ${color};
+                    border-radius: 4px;
+                    padding: 6px 8px;
+                    font-size: 11px;
+                    color: #f1f5f9;
+                    cursor: pointer;
+                    text-align: left;
+                    transition: all 0.15s ease;
+                `;
+                btn.addEventListener("mouseenter", () => btn.style.background = "rgba(51, 65, 85, 0.5)");
+                btn.addEventListener("mouseleave", () => btn.style.background = "rgba(30, 41, 59, 0.7)");
+                btn.addEventListener("click", () => {
+                    if (!targetNode) return;
+                    // Jump to containing layer
+                    this.store.currentParentId = targetNode.parentId;
+                    this.store.notify();
+                    this.canvasView.selectedNode = targetNode;
+                    this.canvasView.lastFocusedNode = targetNode;
+                    this.canvasView.selectedRelationship = null;
+                    this.camera.x = targetNode.x;
+                    this.camera.y = targetNode.y;
+                    this.openInspector(targetNode);
+                });
+                return btn;
+            };
+
+            jumpRow.appendChild(createJumpBtn("From", fromNode, "#38bdf8"));
+            jumpRow.appendChild(createJumpBtn("To", toNode, "#fb923c"));
+            body.appendChild(jumpRow);
+        }
+
+        // 1. Label Field
+        const labelGroup = document.createElement("div");
+        labelGroup.style.cssText = "display: flex; flex-direction: column; gap: 6px;";
+        const labelTitle = document.createElement("label");
+        labelTitle.textContent = "Label";
+        labelTitle.style.cssText = "font-size: 12px; font-weight: 600; color: #94a3b8;";
+
+        const labelInput = document.createElement("input");
+        labelInput.type = "text";
+        labelInput.value = entity.label || "";
+        labelInput.style.cssText = `
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            border-radius: 4px;
+            color: #f8fafc;
+            padding: 6px 10px;
+            font-size: 13px;
+        `;
+        labelInput.addEventListener("input", () => {
+            entity.label = labelInput.value;
+            title.textContent = entity.label;
+            this.store.notify();
+        });
+        labelGroup.appendChild(labelTitle);
+        labelGroup.appendChild(labelInput);
+        body.appendChild(labelGroup);
+
+        // 2. Description Field
+        const descGroup = document.createElement("div");
+        descGroup.style.cssText = "display: flex; flex-direction: column; gap: 6px;";
+        const descTitle = document.createElement("label");
+        descTitle.textContent = "Description / Notes";
+        descTitle.style.cssText = "font-size: 12px; font-weight: 600; color: #94a3b8;";
+
+        const descTextarea = document.createElement("textarea");
+        descTextarea.rows = 3;
+        descTextarea.value = entity.description || "";
+        descTextarea.placeholder = "Add planning context, thoughts, or implementation notes...";
+        descTextarea.style.cssText = `
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            border-radius: 4px;
+            color: #f8fafc;
+            padding: 8px 10px;
+            font-size: 12px;
+            font-family: inherit;
+            resize: vertical;
+        `;
+        descTextarea.addEventListener("input", () => {
+            entity.description = descTextarea.value;
+            this.store.notify();
+        });
+        descGroup.appendChild(descTitle);
+        descGroup.appendChild(descTextarea);
+        body.appendChild(descGroup);
+
+        // 3. Properties Table
+        const propsGroup = document.createElement("div");
+        propsGroup.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
+        this.renderPropertiesEditor(propsGroup, entity);
+        body.appendChild(propsGroup);
+
+        // 4. Cross-layer search / Connections (if Node)
+        if (isNode) {
+            const relGroup = document.createElement("div");
+            relGroup.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
+            this.renderCrossLayerConnectSection(relGroup, entity);
+            body.appendChild(relGroup);
+        }
+
+        this.inspectorDrawer.appendChild(body);
+    }
+
+    renderPropertiesEditor(parentEl, entity) {
+        if (!entity.properties) entity.properties = {};
+
+        const headerRow = document.createElement("div");
+        headerRow.style.cssText = "display: flex; align-items: center; justify-content: space-between;";
+
+        const title = document.createElement("span");
+        title.textContent = "Properties";
+        title.style.cssText = "font-size: 12px; font-weight: 600; color: #94a3b8;";
+        headerRow.appendChild(title);
+
+        const addPropBtn = document.createElement("button");
+        addPropBtn.textContent = "+ Add Property";
+        addPropBtn.style.cssText = `
+            background: rgba(56, 189, 248, 0.15);
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            color: #38bdf8;
+            border-radius: 4px;
+            font-size: 11px;
+            padding: 3px 8px;
+            cursor: pointer;
+        `;
+        addPropBtn.addEventListener("click", () => {
+            const defaultKey = `prop${Object.keys(entity.properties).length + 1}`;
+            entity.properties[defaultKey] = this.store.doc.types[0] || "text";
+            this.store.notify();
+            this.renderInspectorContent();
+        });
+        headerRow.appendChild(addPropBtn);
+        parentEl.appendChild(headerRow);
+
+        const table = document.createElement("div");
+        table.style.cssText = "display: flex; flex-direction: column; gap: 6px;";
+
+        const entries = Object.entries(entity.properties);
+        if (entries.length === 0) {
+            const emptyText = document.createElement("div");
+            emptyText.textContent = "No properties defined.";
+            emptyText.style.cssText = "font-size: 12px; color: #64748b; font-style: italic;";
+            table.appendChild(emptyText);
+        }
+
+        for (const [key, type] of entries) {
+            const row = document.createElement("div");
+            row.style.cssText = "display: flex; align-items: center; gap: 6px;";
+
+            // Key Input
+            const keyInput = document.createElement("input");
+            keyInput.type = "text";
+            keyInput.value = key;
+            keyInput.style.cssText = `
+                flex: 1;
+                background: rgba(15, 23, 42, 0.8);
+                border: 1px solid rgba(51, 65, 85, 0.8);
+                border-radius: 4px;
+                color: #f8fafc;
+                padding: 4px 8px;
+                font-size: 12px;
+            `;
+            keyInput.addEventListener("change", () => {
+                const newKey = keyInput.value.trim();
+                if (newKey && newKey !== key) {
+                    const currentType = entity.properties[key];
+                    delete entity.properties[key];
+                    entity.properties[newKey] = currentType;
+                    this.store.notify();
+                    this.renderInspectorContent();
+                }
+            });
+            row.appendChild(keyInput);
+
+            // Type Dropdown
+            const typeSelect = document.createElement("select");
+            typeSelect.style.cssText = `
+                width: 100px;
+                background: rgba(15, 23, 42, 0.8);
+                border: 1px solid rgba(51, 65, 85, 0.8);
+                border-radius: 4px;
+                color: #a5f3fc;
+                padding: 4px;
+                font-size: 12px;
+                cursor: pointer;
+            `;
+            for (const t of this.store.doc.types) {
+                const opt = document.createElement("option");
+                opt.value = t;
+                opt.textContent = t;
+                if (t === type) opt.selected = true;
+                typeSelect.appendChild(opt);
+            }
+            typeSelect.addEventListener("change", () => {
+                entity.properties[key] = typeSelect.value;
+                this.store.notify();
+            });
+            row.appendChild(typeSelect);
+
+            // Delete property button
+            const delBtn = document.createElement("button");
+            delBtn.innerHTML = "✕";
+            delBtn.title = `Delete property "${key}"`;
+            delBtn.style.cssText = `
+                background: transparent;
+                border: none;
+                color: #64748b;
+                font-size: 12px;
+                cursor: pointer;
+                padding: 0 4px;
+            `;
+            delBtn.addEventListener("mouseenter", () => delBtn.style.color = "#f43f5e");
+            delBtn.addEventListener("mouseleave", () => delBtn.style.color = "#64748b");
+            delBtn.addEventListener("click", () => {
+                delete entity.properties[key];
+                this.store.notify();
+                this.renderInspectorContent();
+            });
+            row.appendChild(delBtn);
+
+            table.appendChild(row);
+        }
+        parentEl.appendChild(table);
+    }
+
+    renderCrossLayerConnectSection(parentEl, node) {
+        const idToNode = new Map(this.store.doc.nodes.map(n => [n.id, n]));
+        const allNodeRels = this.store.doc.relationships.filter(r => r.from === node.id || r.to === node.id);
+
+        const visibleRels = allNodeRels.filter(r => !r.hidden);
+        const hiddenRels = allNodeRels.filter(r => Boolean(r.hidden));
+
+        // Helper to render an action item row
+        const createActionRow = (rel, isVisibleSection) => {
+            const isOutgoing = rel.from === node.id;
+            const otherNode = idToNode.get(isOutgoing ? rel.to : rel.from);
+            const otherLabel = otherNode ? otherNode.label : `#${isOutgoing ? rel.to : rel.from}`;
+
+            const row = document.createElement("div");
+            row.draggable = true;
+            row.dataset.relId = rel.id.toString();
+            row.style.cssText = `
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                background: rgba(15, 23, 42, 0.7);
+                border: 1px solid rgba(51, 65, 85, 0.5);
+                border-left: 3px solid ${isOutgoing ? "#38bdf8" : "#fb923c"};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 12px;
+                gap: 6px;
+                cursor: grab;
+                transition: background 0.15s ease;
+            `;
+
+            // Drag handle + Move (↓ / ↑) button
+            const leftControls = document.createElement("div");
+            leftControls.style.cssText = "display: flex; align-items: center; gap: 4px;";
+
+            const dragGrip = document.createElement("span");
+            dragGrip.innerHTML = "⋮⋮";
+            dragGrip.title = "Drag to reorder or move between sections";
+            dragGrip.style.cssText = "color: #64748b; font-size: 11px; cursor: grab;";
+            leftControls.appendChild(dragGrip);
+
+            const moveBtn = document.createElement("button");
+            moveBtn.innerHTML = isVisibleSection ? "↓" : "↑";
+            moveBtn.title = isVisibleSection ? "Hide from canvas (move to Drawer)" : "Show on canvas (move to Canvas)";
+            moveBtn.style.cssText = `
+                background: transparent;
+                border: 1px solid rgba(100, 116, 139, 0.4);
+                border-radius: 3px;
+                color: ${isVisibleSection ? "#94a3b8" : "#38bdf8"};
+                font-size: 11px;
+                padding: 1px 4px;
+                cursor: pointer;
+                line-height: 1;
+            `;
+            moveBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                rel.hidden = isVisibleSection; // toggle
+                this.store.notify();
+                this.renderInspectorContent();
+            });
+            leftControls.appendChild(moveBtn);
+            row.appendChild(leftControls);
+
+            // Label text
+            const labelCol = document.createElement("div");
+            labelCol.style.cssText = "display: flex; flex-direction: column; gap: 1px; flex: 1;";
+
+            const actionSpan = document.createElement("span");
+            actionSpan.style.cssText = `font-weight: 500; color: ${isVisibleSection ? "#f1f5f9" : "#94a3b8"};`;
+            actionSpan.textContent = `${isOutgoing ? "→" : "←"} ${rel.label}`;
+
+            const targetSpan = document.createElement("span");
+            targetSpan.style.cssText = "font-size: 10px; color: #64748b;";
+            targetSpan.textContent = isOutgoing ? `to ${otherLabel}` : `from ${otherLabel}`;
+
+            labelCol.appendChild(actionSpan);
+            labelCol.appendChild(targetSpan);
+            row.appendChild(labelCol);
+
+            // Actions buttons: Inspect (📝) & Delete (✕)
+            const btnGroup = document.createElement("div");
+            btnGroup.style.cssText = "display: flex; align-items: center; gap: 4px;";
+
+            const inspectRelBtn = document.createElement("button");
+            inspectRelBtn.innerHTML = "📝";
+            inspectRelBtn.title = "Inspect this action";
+            inspectRelBtn.style.cssText = "background: transparent; border: none; font-size: 11px; cursor: pointer; padding: 2px;";
+            inspectRelBtn.addEventListener("click", () => this.openInspector(rel));
+            btnGroup.appendChild(inspectRelBtn);
+
+            const delRelBtn = document.createElement("button");
+            delRelBtn.innerHTML = "✕";
+            delRelBtn.title = "Delete this action";
+            delRelBtn.style.cssText = "background: transparent; border: none; color: #94a3b8; font-size: 12px; cursor: pointer; padding: 2px 4px;";
+            delRelBtn.addEventListener("mouseenter", () => delRelBtn.style.color = "#f43f5e");
+            delRelBtn.addEventListener("mouseleave", () => delRelBtn.style.color = "#94a3b8");
+            delRelBtn.addEventListener("click", () => {
+                this.store.removeRelationship(rel.id);
+                this.renderInspectorContent();
+            });
+            btnGroup.appendChild(delRelBtn);
+
+            row.appendChild(btnGroup);
+
+            // Drag event listeners
+            row.addEventListener("dragstart", (e) => {
+                e.dataTransfer.setData("text/plain", rel.id.toString());
+                row.style.opacity = "0.5";
+            });
+            row.addEventListener("dragend", () => {
+                row.style.opacity = "1";
+            });
+
+            return row;
+        };
+
+        // Helper to setup a drop target list container with live drag indicator
+        const setupDropList = (container, isVisibleTarget) => {
+            let indicator = null;
+
+            container.addEventListener("dragover", (e) => {
+                e.preventDefault();
+                container.style.background = "rgba(56, 189, 248, 0.08)";
+
+                const afterElement = getDragAfterElement(container, e.clientY);
+
+                if (!indicator) {
+                    indicator = document.createElement("div");
+                    indicator.id = "drop-indicator";
+                    indicator.style.cssText = "height: 2px; background: #38bdf8; border-radius: 2px; margin: 2px 0; box-shadow: 0 0 6px #38bdf8;";
+                }
+
+                if (afterElement) {
+                    container.insertBefore(indicator, afterElement);
+                } else {
+                    container.appendChild(indicator);
+                }
+            });
+
+            const clearIndicator = () => {
+                container.style.background = "transparent";
+                if (indicator && indicator.parentNode) {
+                    indicator.parentNode.removeChild(indicator);
+                    indicator = null;
+                }
+            };
+
+            container.addEventListener("dragleave", (e) => {
+                if (!container.contains(e.relatedTarget)) {
+                    clearIndicator();
+                }
+            });
+
+            container.addEventListener("drop", (e) => {
+                e.preventDefault();
+                const afterElement = getDragAfterElement(container, e.clientY);
+                clearIndicator();
+
+                const draggedRelId = parseInt(e.dataTransfer.getData("text/plain"), 10);
+                const draggedRel = this.store.doc.relationships.find(r => r.id === draggedRelId);
+                if (draggedRel) {
+                    draggedRel.hidden = !isVisibleTarget;
+
+                    const currentIndex = this.store.doc.relationships.indexOf(draggedRel);
+                    this.store.doc.relationships.splice(currentIndex, 1);
+
+                    if (afterElement && afterElement.id !== "drop-indicator") {
+                        const targetId = parseInt(afterElement.dataset.relId, 10);
+                        const targetIdx = this.store.doc.relationships.findIndex(r => r.id === targetId);
+                        this.store.doc.relationships.splice(targetIdx, 0, draggedRel);
+                    } else {
+                        this.store.doc.relationships.push(draggedRel);
+                    }
+
+                    this.store.notify();
+                    this.renderInspectorContent();
+                }
+            });
+        };
+
+        const getDragAfterElement = (container, y) => {
+            const draggableElements = [...container.querySelectorAll("[data-rel-id]:not([style*='opacity: 0.5'])")];
+            for (const child of draggableElements) {
+                const box = child.getBoundingClientRect();
+                // If cursor is above the bottom 30% of the box, place before this child
+                if (y < box.top + box.height * 0.7) {
+                    return child;
+                }
+            }
+            return null;
+        };
+
+        // --- Section 1: Visible Actions (Canvas) ---
+        const visHeader = document.createElement("div");
+        visHeader.style.cssText = "display: flex; justify-content: space-between; align-items: center; margin-top: 4px;";
+        const visTitle = document.createElement("span");
+        visTitle.innerHTML = `<strong>Visible on Canvas</strong> <span style="color:#38bdf8; font-size:11px;">(${visibleRels.length})</span>`;
+        visTitle.style.cssText = "font-size: 12px; color: #94a3b8;";
+        visHeader.appendChild(visTitle);
+        parentEl.appendChild(visHeader);
+
+        const visContainer = document.createElement("div");
+        visContainer.style.cssText = "display: flex; flex-direction: column; gap: 5px; min-height: 28px; padding: 4px; border-radius: 4px; border: 1px dashed rgba(56, 189, 248, 0.25); margin-bottom: 12px; transition: background 0.15s ease;";
+        setupDropList(visContainer, true);
+
+        if (visibleRels.length === 0) {
+            const emptyMsg = document.createElement("div");
+            emptyMsg.textContent = "Drop actions here to show on canvas";
+            emptyMsg.style.cssText = "font-size: 11px; color: #64748b; font-style: italic; padding: 4px;";
+            visContainer.appendChild(emptyMsg);
+        } else {
+            for (const rel of visibleRels) {
+                visContainer.appendChild(createActionRow(rel, true));
+            }
+        }
+        parentEl.appendChild(visContainer);
+
+        // --- Section 2: Hidden Actions (Drawer Only) ---
+        const hiddenHeader = document.createElement("div");
+        hiddenHeader.style.cssText = "display: flex; justify-content: space-between; align-items: center;";
+        const hiddenTitle = document.createElement("span");
+        hiddenTitle.innerHTML = `<strong>Hidden in Drawer</strong> <span style="color:#64748b; font-size:11px;">(${hiddenRels.length})</span>`;
+        hiddenTitle.style.cssText = "font-size: 12px; color: #94a3b8;";
+        hiddenHeader.appendChild(hiddenTitle);
+        parentEl.appendChild(hiddenHeader);
+
+        const hiddenContainer = document.createElement("div");
+        hiddenContainer.style.cssText = "display: flex; flex-direction: column; gap: 5px; min-height: 28px; padding: 4px; border-radius: 4px; border: 1px dashed rgba(100, 116, 139, 0.3); margin-bottom: 16px; transition: background 0.15s ease;";
+        setupDropList(hiddenContainer, false);
+
+        if (hiddenRels.length === 0) {
+            const emptyMsg = document.createElement("div");
+            emptyMsg.textContent = "Drop actions here to hide from canvas";
+            emptyMsg.style.cssText = "font-size: 11px; color: #64748b; font-style: italic; padding: 4px;";
+            hiddenContainer.appendChild(emptyMsg);
+        } else {
+            for (const rel of hiddenRels) {
+                hiddenContainer.appendChild(createActionRow(rel, false));
+            }
+        }
+        parentEl.appendChild(hiddenContainer);
+
+        // --- Section 3: Connect to Any Bubble ---
+        const searchTitle = document.createElement("span");
+        searchTitle.textContent = "Connect to Any Bubble (Cross-Layer)";
+        searchTitle.style.cssText = "font-size: 12px; font-weight: 600; color: #94a3b8;";
+        parentEl.appendChild(searchTitle);
+
+        const searchInput = document.createElement("input");
+        searchInput.type = "text";
+        searchInput.placeholder = "Search name or namespace path...";
+        searchInput.style.cssText = `
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            border-radius: 4px;
+            color: #f8fafc;
+            padding: 6px 10px;
+            font-size: 12px;
+        `;
+        parentEl.appendChild(searchInput);
+
+        const resultsContainer = document.createElement("div");
+        resultsContainer.style.cssText = "display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto;";
+        parentEl.appendChild(resultsContainer);
+
+        const updateResults = () => {
+            resultsContainer.innerHTML = "";
+            const q = searchInput.value.trim().toLowerCase();
+            if (!q) return;
+
+            const matches = this.store.doc.nodes
+                .filter(n => n.id !== node.id)
+                .map(n => ({ node: n, ns: this.getNodeNamespace(n) }))
+                .filter(item => item.ns.toLowerCase().includes(q) || item.node.label.toLowerCase().includes(q));
+
+            for (const item of matches.slice(0, 5)) {
+                const row = document.createElement("button");
+                row.style.cssText = `
+                    text-align: left;
+                    background: rgba(30, 41, 59, 0.6);
+                    border: 1px solid rgba(51, 65, 85, 0.5);
+                    border-radius: 4px;
+                    padding: 5px 8px;
+                    color: #cbd5e1;
+                    font-size: 11px;
+                    cursor: pointer;
+                    display: flex;
+                    justify-content: space-between;
+                `;
+                row.innerHTML = `<span><strong>${item.node.label}</strong> <span style="color:#64748b">(${item.ns})</span></span><span style="color:#38bdf8">+ Connect</span>`;
+                row.addEventListener("click", () => {
+                    const actionLabel = window.prompt(`Action from "${node.label}" to "${item.node.label}":`, "action");
+                    if (actionLabel) {
+                        this.store.addRelationship(node.id, item.node.id, actionLabel);
+                        searchInput.value = "";
+                        updateResults();
+                        this.renderInspectorContent();
+                    }
+                });
+                resultsContainer.appendChild(row);
+            }
+        };
+
+        searchInput.addEventListener("input", updateResults);
+    }
+
     // --- Settings Drawer ---
 
     toggleSettings() {
@@ -267,16 +977,94 @@ class UIController {
         const body = document.createElement("div");
         body.style.cssText = "padding: 16px; display: flex; flex-direction: column; gap: 24px;";
 
-        // 1. Keybindings Section
+        // 1. Inspector Behavior Preferences
+        body.appendChild(this.createPreferencesPanel());
+
+        // 2. Keybindings Section
         body.appendChild(this.createKeybindingsPanel());
 
-        // 2. Custom Scalar Types Section
+        // 3. Custom Scalar Types Section
         body.appendChild(this.createScalarTypesPanel());
 
-        // 3. Storage / Reset Section
+        // 4. Storage / Reset Section
         body.appendChild(this.createStoragePanel());
 
         this.settingsDrawer.appendChild(body);
+    }
+
+    createPreferencesPanel() {
+        const panel = document.createElement("div");
+
+        const title = document.createElement("h3");
+        title.textContent = "Inspector Behavior";
+        title.style.cssText = "margin: 0 0 10px 0; font-size: 14px; font-weight: 600; color: #38bdf8;";
+        panel.appendChild(title);
+
+        const list = document.createElement("div");
+        list.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
+
+        // Toggle 1: Auto-open on focus
+        const row1 = document.createElement("label");
+        row1.style.cssText = "display: flex; align-items: center; gap: 8px; font-size: 13px; color: #e2e8f0; cursor: pointer;";
+        const cb1 = document.createElement("input");
+        cb1.type = "checkbox";
+        cb1.checked = this.autoOpenInspector;
+        cb1.style.cursor = "pointer";
+        cb1.addEventListener("change", () => {
+            this.autoOpenInspector = cb1.checked;
+        });
+        row1.appendChild(cb1);
+        const span1 = document.createElement("span");
+        span1.textContent = "Auto-open inspector on entity focus";
+        row1.appendChild(span1);
+        list.appendChild(row1);
+
+        // Toggle 2: Auto-close on unfocus
+        const row2 = document.createElement("label");
+        row2.style.cssText = "display: flex; align-items: center; gap: 8px; font-size: 13px; color: #e2e8f0; cursor: pointer;";
+        const cb2 = document.createElement("input");
+        cb2.type = "checkbox";
+        cb2.checked = this.autoCloseInspector;
+        cb2.style.cursor = "pointer";
+        cb2.addEventListener("change", () => {
+            this.autoCloseInspector = cb2.checked;
+        });
+        row2.appendChild(cb2);
+        const span2 = document.createElement("span");
+        span2.textContent = "Auto-close inspector on canvas click (unfocus)";
+        row2.appendChild(span2);
+        list.appendChild(row2);
+
+        // Setting 3: Drag Deadzone / Threshold Slider
+        const row3 = document.createElement("div");
+        row3.style.cssText = "display: flex; flex-direction: column; gap: 4px; margin-top: 6px;";
+        const row3Header = document.createElement("div");
+        row3Header.style.cssText = "display: flex; justify-content: space-between; font-size: 13px; color: #e2e8f0;";
+        const row3Title = document.createElement("span");
+        row3Title.textContent = "Drag Deadzone / Threshold:";
+        const row3Val = document.createElement("span");
+        row3Val.textContent = `${this.canvasView.dragThreshold}px`;
+        row3Val.style.color = "#38bdf8";
+        row3Val.style.fontWeight = "600";
+        row3Header.appendChild(row3Title);
+        row3Header.appendChild(row3Val);
+        row3.appendChild(row3Header);
+
+        const slider = document.createElement("input");
+        slider.type = "range";
+        slider.min = "5";
+        slider.max = "60";
+        slider.value = this.canvasView.dragThreshold.toString();
+        slider.style.cssText = "cursor: pointer; width: 100%; accent-color: #38bdf8;";
+        slider.addEventListener("input", () => {
+            this.canvasView.dragThreshold = parseInt(slider.value, 10);
+            row3Val.textContent = `${this.canvasView.dragThreshold}px`;
+        });
+        row3.appendChild(slider);
+        list.appendChild(row3);
+
+        panel.appendChild(list);
+        return panel;
     }
 
     createKeybindingsPanel() {
@@ -665,28 +1453,6 @@ class UIController {
 
         panel.appendChild(resetBtn);
         return panel;
-    }
-
-    // --- Inspector Drawer (Stubs for next step) ---
-
-    openInspector(entity) {
-        // stub
-    }
-
-    closeInspector() {
-        // stub
-    }
-
-    renderInspectorContent() {
-        // stub
-    }
-
-    renderPropertiesEditor(parentEl, entity) {
-        // stub
-    }
-
-    renderCrossLayerConnectSection(parentEl, node) {
-        // stub
     }
 
     getNodeNamespace(node) {
