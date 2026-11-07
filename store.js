@@ -19,10 +19,10 @@ class ProjectStore {
             lastRelId: 1,
             types: ["text", "number"],
             nodes: [
-                { id: 1, parentId: null, label: "Postal Service", description: "Root system", x: 400, y: 300, properties: { hq: "text" } },
+                { id: 1, parentId: null, label: "Postal Service", description: "Root system", x: 400, y: 300, properties: { hq: "text", zip_code: "number", active: "text", supervisor: "text" } },
                 { id: 2, parentId: 1, label: "Post Office", description: "Central hub", x: 250, y: 300, properties: {} },
                 { id: 3, parentId: 1, label: "Mail Truck", description: "Transport unit", x: 500, y: 220, properties: {} },
-                { id: 4, parentId: 1, label: "Customer Location", description: "Recipient address", x: 500, y: 380, properties: { address: "text" } }
+                { id: 4, parentId: 1, label: "Customer Location", description: "Recipient address", x: 500, y: 380, properties: { address: "text", delivery_window: "text", signature_required: "text" } }
             ],
             relationships: [
                 { id: 1, from: 3, to: 4, label: "delivery", description: "Delivers mail", properties: {} }

@@ -27,6 +27,12 @@ class UIController {
         /** @type {HTMLElement|null} Settings drawer container */
         this.settingsDrawer = null;
 
+        /** @type {HTMLElement|null} Floating property quick-filter card container */
+        this.propFilterCard = null;
+
+        /** @type {BubbleNode|null} Currently active node in property quick-filter */
+        this.activeFilterNode = null;
+
         /** @type {BubbleNode|BubbleRelationship|null} */
         this.inspectedEntity = null;
 
@@ -45,9 +51,23 @@ class UIController {
         /** @type {string|null} Action ID currently recording a new trigger */
         this.recordingActionId = null;
 
+        /** @type {Array<string>} Active overlay stack in LIFO order */
+        this.overlayStack = [];
+
         this.mount();
         this.store.subscribe(() => {
             this.renderBreadcrumbs();
+            if (this.activeFilterNode) {
+                const nodeStillVisible = this.store.getVisibleNodes().some(n => n.id === this.activeFilterNode.id);
+                if (!nodeStillVisible) {
+                    this.closePropertyQuickFilter();
+                } else {
+                    const isTypingInFilter = this.propFilterCard && this.propFilterCard.contains(document.activeElement);
+                    if (!isTypingInFilter) {
+                        this.renderPropertyQuickFilterContent();
+                    }
+                }
+            }
             if (this.isInspectorOpen && this.inspectedEntity) {
                 // If entity was deleted, close
                 const exists = this.store.doc.nodes.some(n => n.id === this.inspectedEntity.id) ||
@@ -64,6 +84,71 @@ class UIController {
                 }
             }
         });
+    }
+
+    pushOverlay(name) {
+        this.overlayStack = this.overlayStack.filter(item => item !== name);
+        this.overlayStack.push(name);
+    }
+
+    removeOverlay(name) {
+        this.overlayStack = this.overlayStack.filter(item => item !== name);
+    }
+
+    /**
+     * Handle Escape key across all active UI overlays and drawers in LIFO order.
+     * @returns {boolean} Whether an overlay, drawer, or input was dismissed/handled.
+     */
+    handleEscape() {
+        // 1. If currently recording a keybinding in settings, cancel recording first
+        if (this.recordingActionId) {
+            this.recordingActionId = null;
+            this.renderSettingsContent();
+            return true;
+        }
+
+        // 2. If a text field in an open drawer has focus, blur it first
+        const active = document.activeElement;
+        if (active && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement)) {
+            if ((this.inspectorDrawer && this.inspectorDrawer.contains(active)) ||
+                (this.settingsDrawer && this.settingsDrawer.contains(active))) {
+                active.blur();
+                return true;
+            }
+        }
+
+        // 3. Pop topmost overlay from stack
+        while (this.overlayStack.length > 0) {
+            const top = this.overlayStack.pop();
+            if (top === "propFilter" && this.propFilterCard && this.propFilterCard.style.display !== "none") {
+                this.closePropertyQuickFilter();
+                return true;
+            }
+            if (top === "settings" && this.isSettingsOpen) {
+                this.closeSettings();
+                return true;
+            }
+            if (top === "inspector" && this.isInspectorOpen) {
+                this.closeInspector();
+                return true;
+            }
+        }
+
+        // 4. Fallbacks in case an overlay was opened without stack tracking
+        if (this.propFilterCard && this.propFilterCard.style.display !== "none") {
+            this.closePropertyQuickFilter();
+            return true;
+        }
+        if (this.isSettingsOpen) {
+            this.closeSettings();
+            return true;
+        }
+        if (this.isInspectorOpen) {
+            this.closeInspector();
+            return true;
+        }
+
+        return false;
     }
 
     /** Mount DOM overlay elements for top bar, breadcrumbs, and drawer containers */
@@ -199,7 +284,358 @@ class UIController {
         `;
         document.body.appendChild(this.inspectorDrawer);
 
+        // Floating Property Quick-Filter Card
+        this.propFilterCard = document.createElement("div");
+        this.propFilterCard.id = "prop-filter-card";
+        this.propFilterCard.style.cssText = `
+            position: fixed;
+            width: 240px;
+            max-height: 220px;
+            background: rgba(15, 23, 42, 0.98);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(168, 85, 247, 0.6);
+            border-radius: 8px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8), 0 0 15px rgba(168, 85, 247, 0.2);
+            display: none;
+            flex-direction: column;
+            z-index: 50;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #f1f5f9;
+            padding: 10px;
+            gap: 8px;
+            outline: none;
+        `;
+        this.propFilterCard.tabIndex = -1;
+        this.propFilterCard.addEventListener("keydown", (e) => {
+            if (e.key === "Escape") {
+                this.closePropertyQuickFilter();
+                e.stopPropagation();
+                e.preventDefault();
+            }
+        });
+        document.body.appendChild(this.propFilterCard);
+
+        // Close quick-filter card when clicking outside
+        window.addEventListener("mousedown", (e) => {
+            if (this.propFilterCard && this.propFilterCard.style.display !== "none") {
+                if (this.propFilterCard.contains(e.target)) return;
+                if (e.target === this.canvasView.canvas) {
+                    const hit = this.canvasView.hitTest(e.clientX, e.clientY);
+                    if (hit.hitPropFilter) {
+                        return; // Let handle/badge click handler toggle it
+                    }
+                }
+                this.closePropertyQuickFilter();
+            }
+        });
+
         this.renderBreadcrumbs();
+    }
+
+    // --- Property Quick-Filter Floating Card ---
+
+    togglePropertyQuickFilter(node) {
+        if (this.activeFilterNode === node && this.propFilterCard.style.display !== "none") {
+            this.closePropertyQuickFilter();
+        } else {
+            this.openPropertyQuickFilter(node);
+        }
+    }
+
+    openPropertyQuickFilter(node) {
+        if (!node) return;
+        this.activeFilterNode = node;
+
+        const screenPos = this.camera.worldToScreen(node.x, node.y);
+        const m = this.canvasView.computeNodeMetrics(node);
+        const cardWidth = 260;
+
+        let left = Math.round(screenPos.x - cardWidth / 2);
+        let top = Math.round(screenPos.y + (m.height / 2) * this.camera.zoom + 12);
+
+        // Clamp to screen bounds so it's always in view
+        const margin = 12;
+        left = Math.max(margin, Math.min(window.innerWidth - cardWidth - margin, left));
+        if (top + 240 > window.innerHeight) {
+            top = Math.round(screenPos.y - (m.height / 2) * this.camera.zoom - 240);
+            top = Math.max(margin, top);
+        }
+
+        this.propFilterCard.style.left = `${left}px`;
+        this.propFilterCard.style.top = `${top}px`;
+        this.propFilterCard.style.width = `${cardWidth}px`;
+        this.propFilterCard.style.display = "flex";
+
+        this.pushOverlay("propFilter");
+        this.renderPropertyQuickFilterContent();
+    }
+
+    closePropertyQuickFilter() {
+        this.removeOverlay("propFilter");
+        this.activeFilterNode = null;
+        if (this.propFilterCard) {
+            this.propFilterCard.style.display = "none";
+        }
+    }
+
+    renderPropertyQuickFilterContent(focusKey = null) {
+        if (!this.propFilterCard || !this.activeFilterNode) return;
+        this.propFilterCard.innerHTML = "";
+
+        const node = this.activeFilterNode;
+        if (!node.properties) node.properties = {};
+
+        // Top Row: Filter Search Input + Floating "+ Add" Action Button
+        const topRow = document.createElement("div");
+        topRow.style.cssText = "display: flex; align-items: center; gap: 6px;";
+
+        const searchInput = document.createElement("input");
+        searchInput.type = "text";
+        searchInput.placeholder = "Filter properties...";
+        searchInput.style.cssText = `
+            flex: 1;
+            min-width: 0;
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(168, 85, 247, 0.4);
+            border-radius: 4px;
+            color: #f8fafc;
+            padding: 4px 8px;
+            font-size: 11px;
+            outline: none;
+        `;
+        searchInput.addEventListener("focus", () => {
+            searchInput.style.borderColor = "#c084fc";
+        });
+        searchInput.addEventListener("blur", () => {
+            searchInput.style.borderColor = "rgba(168, 85, 247, 0.4)";
+        });
+        searchInput.addEventListener("keydown", (e) => {
+            if (e.key === "Escape") {
+                if (searchInput.value.trim().length > 0) {
+                    searchInput.value = "";
+                    searchInput.dispatchEvent(new Event("input"));
+                    this.propFilterCard.focus();
+                } else {
+                    this.closePropertyQuickFilter();
+                }
+                e.stopPropagation();
+                e.preventDefault();
+            }
+        });
+        topRow.appendChild(searchInput);
+
+        // Floating Action: "+ Add" button
+        const addBtn = document.createElement("button");
+        addBtn.innerHTML = "+ Add";
+        addBtn.title = "Add a new property to this bubble";
+        addBtn.style.cssText = `
+            flex-shrink: 0;
+            background: rgba(168, 85, 247, 0.2);
+            border: 1px solid rgba(168, 85, 247, 0.6);
+            color: #c084fc;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+        `;
+        addBtn.addEventListener("mouseenter", () => {
+            addBtn.style.background = "rgba(168, 85, 247, 0.4)";
+            addBtn.style.color = "#ffffff";
+        });
+        addBtn.addEventListener("mouseleave", () => {
+            addBtn.style.background = "rgba(168, 85, 247, 0.2)";
+            addBtn.style.color = "#c084fc";
+        });
+        addBtn.addEventListener("click", () => {
+            let nextNum = Object.keys(node.properties).length + 1;
+            let newKey = `prop${nextNum}`;
+            while (node.properties[newKey] !== undefined) {
+                nextNum++;
+                newKey = `prop${nextNum}`;
+            }
+            node.properties[newKey] = (this.store.doc.types && this.store.doc.types[0]) || "text";
+            this.store.notify();
+            this.renderPropertyQuickFilterContent(newKey);
+        });
+        topRow.appendChild(addBtn);
+
+        this.propFilterCard.appendChild(topRow);
+
+        // Body: 2-column scrollable table
+        const tableContainer = document.createElement("div");
+        tableContainer.style.cssText = "display: flex; flex-direction: column; gap: 4px; overflow-y: auto; max-height: 160px;";
+
+        const renderRows = (filterText = "") => {
+            tableContainer.innerHTML = "";
+            const allProps = Object.entries(node.properties || {});
+            const filtered = allProps.filter(([k]) => k.toLowerCase().includes(filterText.toLowerCase()));
+
+            if (filtered.length === 0) {
+                const empty = document.createElement("div");
+                empty.textContent = allProps.length === 0 ? "No properties on bubble" : "No matching properties";
+                empty.style.cssText = "font-size: 11px; color: #64748b; font-style: italic; padding: 4px;";
+                tableContainer.appendChild(empty);
+                return;
+            }
+
+            for (const [key, type] of filtered) {
+                const row = document.createElement("div");
+                row.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    background: rgba(30, 41, 59, 0.6);
+                    border: 1px solid rgba(51, 65, 85, 0.5);
+                    border-radius: 4px;
+                    padding: 2px 6px;
+                    font-size: 11px;
+                `;
+
+                // Single-click editable Key Input
+                const keyInput = document.createElement("input");
+                keyInput.type = "text";
+                keyInput.value = key;
+                keyInput.style.cssText = `
+                    flex: 1;
+                    min-width: 0;
+                    background: transparent;
+                    border: 1px solid transparent;
+                    border-radius: 3px;
+                    color: #f1f5f9;
+                    font-weight: 500;
+                    font-size: 11px;
+                    padding: 2px 4px;
+                    outline: none;
+                `;
+                keyInput.addEventListener("focus", () => {
+                    keyInput.style.background = "rgba(15, 23, 42, 0.8)";
+                    keyInput.style.borderColor = "#c084fc";
+                });
+                keyInput.addEventListener("blur", () => {
+                    keyInput.style.background = "transparent";
+                    keyInput.style.borderColor = "transparent";
+                    commitKeyChange();
+                });
+                keyInput.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") {
+                        keyInput.blur();
+                    } else if (e.key === "Escape") {
+                        keyInput.value = key;
+                        keyInput.blur();
+                        this.propFilterCard.focus();
+                        e.stopPropagation();
+                        e.preventDefault();
+                    }
+                });
+
+                const commitKeyChange = () => {
+                    const newKey = keyInput.value.trim();
+                    if (!newKey || newKey === key) {
+                        keyInput.value = key;
+                        return;
+                    }
+                    if (node.properties[newKey] !== undefined) {
+                        // Key already exists, revert
+                        keyInput.value = key;
+                        return;
+                    }
+                    // Rebuild properties preserving key insertion order
+                    const updated = {};
+                    for (const [k, v] of Object.entries(node.properties)) {
+                        if (k === key) {
+                            updated[newKey] = v;
+                        } else {
+                            updated[k] = v;
+                        }
+                    }
+                    node.properties = updated;
+                    this.store.notify();
+                    renderRows(searchInput.value.trim());
+                };
+
+                row.appendChild(keyInput);
+
+                // Type Dropdown Select
+                const typeSelect = document.createElement("select");
+                typeSelect.style.cssText = `
+                    background: rgba(168, 85, 247, 0.15);
+                    border: 1px solid rgba(168, 85, 247, 0.4);
+                    border-radius: 4px;
+                    color: #c084fc;
+                    font-family: monospace;
+                    font-size: 10px;
+                    padding: 2px 4px;
+                    cursor: pointer;
+                    outline: none;
+                `;
+                for (const t of (this.store.doc.types || ["text", "number"])) {
+                    const opt = document.createElement("option");
+                    opt.value = t;
+                    opt.textContent = t;
+                    if (t === type) opt.selected = true;
+                    typeSelect.appendChild(opt);
+                }
+                typeSelect.addEventListener("change", () => {
+                    node.properties[key] = typeSelect.value;
+                    this.store.notify();
+                });
+                row.appendChild(typeSelect);
+
+                // Remove Button (✕)
+                const delBtn = document.createElement("button");
+                delBtn.innerHTML = "✕";
+                delBtn.title = `Delete "${key}"`;
+                delBtn.style.cssText = `
+                    background: transparent;
+                    border: none;
+                    color: #64748b;
+                    font-size: 11px;
+                    cursor: pointer;
+                    padding: 2px 4px;
+                    border-radius: 3px;
+                    line-height: 1;
+                    transition: all 0.1s ease;
+                `;
+                delBtn.addEventListener("mouseenter", () => {
+                    delBtn.style.color = "#f43f5e";
+                    delBtn.style.background = "rgba(244, 63, 94, 0.2)";
+                });
+                delBtn.addEventListener("mouseleave", () => {
+                    delBtn.style.color = "#64748b";
+                    delBtn.style.background = "transparent";
+                });
+                delBtn.addEventListener("click", () => {
+                    delete node.properties[key];
+                    this.store.notify();
+                    renderRows(searchInput.value.trim());
+                });
+                row.appendChild(delBtn);
+
+                tableContainer.appendChild(row);
+
+                if (focusKey && key === focusKey) {
+                    setTimeout(() => {
+                        keyInput.focus();
+                        keyInput.select();
+                    }, 20);
+                }
+            }
+        };
+
+        searchInput.addEventListener("input", () => {
+            renderRows(searchInput.value.trim());
+        });
+
+        renderRows("");
+        this.propFilterCard.appendChild(tableContainer);
+
+        // Autofocus search input if not focusing a newly added property
+        if (!focusKey) {
+            setTimeout(() => searchInput.focus(), 20);
+        }
     }
 
     // --- Breadcrumbs ---
@@ -291,6 +727,7 @@ class UIController {
         this.inspectedEntity = entity;
         this.isInspectorOpen = true;
         this.inspectorDrawer.style.display = "flex";
+        this.pushOverlay("inspector");
         this.renderInspectorContent();
 
         if (options.focusSearch) {
@@ -305,6 +742,7 @@ class UIController {
     }
 
     closeInspector() {
+        this.removeOverlay("inspector");
         this.isInspectorOpen = false;
         this.inspectedEntity = null;
         if (this.inspectorDrawer) this.inspectorDrawer.style.display = "none";
@@ -931,10 +1369,12 @@ class UIController {
     openSettings() {
         this.isSettingsOpen = true;
         this.settingsDrawer.style.display = "flex";
+        this.pushOverlay("settings");
         this.renderSettingsContent();
     }
 
     closeSettings() {
+        this.removeOverlay("settings");
         this.isSettingsOpen = false;
         this.recordingActionId = null;
         this.settingsDrawer.style.display = "none";

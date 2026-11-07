@@ -40,6 +40,12 @@ class CanvasView {
 
         /** @type {boolean} */
         this.isActionHandleHovered = false;
+        /** @type {boolean} */
+        this.isInspectHandleHovered = false;
+        /** @type {boolean} */
+        this.isPropFilterHovered = false;
+        /** @type {boolean} */
+        this.isPropBadgeHovered = false;
 
         /** @type {number} Distance in screen pixels before mouse down counts as a drag */
         this.dragThreshold = 20;
@@ -85,7 +91,7 @@ class CanvasView {
     /**
      * @param {number} screenX
      * @param {number} screenY
-     * @returns {{node: BubbleNode|null, relationship: BubbleRelationship|null, hitHandle: boolean, hitInspectHandle: boolean}}
+     * @returns {{node: BubbleNode|null, relationship: BubbleRelationship|null, hitHandle: boolean, hitInspectHandle: boolean, hitPropFilter: boolean, hitPropBadge?: boolean}}
      */
     hitTest(screenX, screenY) {
         const worldPos = this.camera.screenToWorld(screenX, screenY);
@@ -96,33 +102,54 @@ class CanvasView {
         if (activeNode) {
             const m = this.computeNodeMetrics(activeNode);
             const handleX = activeNode.x + m.width / 2 + 18; // ⚡ handle
-            const inspectX = activeNode.x + m.width / 2 + 44; // 📝 handle
+            const inspectX = activeNode.x + m.width / 2 + 42; // 📝 handle
+            const propX = activeNode.x + m.width / 2 + 66; // {} handle
             const handleY = activeNode.y;
+
+            // Check {} property filter handle
+            const dProp = Math.hypot(worldPos.x - propX, worldPos.y - handleY);
+            if (dProp <= 13) {
+                return { node: activeNode, relationship: null, hitHandle: false, hitInspectHandle: false, hitPropFilter: true, hitPropBadge: false };
+            }
 
             // Check 📝 inspect handle
             const dInspect = Math.hypot(worldPos.x - inspectX, worldPos.y - handleY);
-            if (dInspect <= 12) {
-                return { node: activeNode, relationship: null, hitHandle: false, hitInspectHandle: true };
+            if (dInspect <= 13) {
+                return { node: activeNode, relationship: null, hitHandle: false, hitInspectHandle: true, hitPropFilter: false, hitPropBadge: false };
             }
 
             // Check ⚡ action handle
             const dHandle = Math.hypot(worldPos.x - handleX, worldPos.y - handleY);
             const inBridge = (
                 worldPos.x >= activeNode.x + m.width / 2 - 4 &&
-                worldPos.x <= inspectX + 14 &&
+                worldPos.x <= propX + 14 &&
                 Math.abs(worldPos.y - handleY) <= 14
             );
 
-            if (dHandle <= 12 || (inBridge && worldPos.x <= handleX + 12)) {
-                return { node: activeNode, relationship: null, hitHandle: true, hitInspectHandle: false };
+            if (dHandle <= 13 || (inBridge && worldPos.x <= handleX + 11)) {
+                return { node: activeNode, relationship: null, hitHandle: true, hitInspectHandle: false, hitPropFilter: false, hitPropBadge: false };
             }
 
             if (inBridge) {
-                return { node: activeNode, relationship: null, hitHandle: false, hitInspectHandle: false };
+                return { node: activeNode, relationship: null, hitHandle: false, hitInspectHandle: false, hitPropFilter: false, hitPropBadge: false };
             }
         }
 
-        // 2. Check node bodies
+        // 2. Check property count badge {N} on visible nodes
+        for (let i = nodes.length - 1; i >= 0; i--) {
+            const node = nodes[i];
+            const propCount = Object.keys(node.properties || {}).length;
+            if (propCount > 0) {
+                const m = this.computeNodeMetrics(node);
+                const propBadgeX = node.x - m.width / 2 + 4;
+                const propBadgeY = node.y - m.height / 2 + 4;
+                if (Math.hypot(worldPos.x - propBadgeX, worldPos.y - propBadgeY) <= 14) {
+                    return { node, relationship: null, hitHandle: false, hitInspectHandle: false, hitPropFilter: true, hitPropBadge: true };
+                }
+            }
+        }
+
+        // 3. Check node bodies
         for (let i = nodes.length - 1; i >= 0; i--) {
             const node = nodes[i];
             const m = this.computeNodeMetrics(node);
@@ -133,11 +160,11 @@ class CanvasView {
             const bottom = node.y + m.height / 2;
 
             if (worldPos.x >= left && worldPos.x <= right && worldPos.y >= top && worldPos.y <= bottom) {
-                return { node, relationship: null, hitHandle: false, hitInspectHandle: false };
+                return { node, relationship: null, hitHandle: false, hitInspectHandle: false, hitPropFilter: false, hitPropBadge: false };
             }
         }
 
-        // 3. Check action label hit boxes and unpin button
+        // 3. Check action label hit boxes
         if (this.renderedLabelBoxes) {
             for (const item of this.renderedLabelBoxes) {
                 if (
@@ -146,15 +173,12 @@ class CanvasView {
                     worldPos.y >= item.box.y &&
                     worldPos.y <= item.box.y + item.box.h
                 ) {
-                    const isPinned = item.rel.pinX !== undefined;
-                    // Check if clicked the unpin (📌) icon on right side of pill
-                    const hitUnpin = isPinned && (worldPos.x >= item.box.x + item.box.w - 20);
                     return {
                         node: null,
                         relationship: item.rel,
                         hitHandle: false,
                         hitInspectHandle: false,
-                        hitUnpin,
+                        hitPropFilter: false,
                         labelX: item.box.x + item.box.w / 2,
                         labelY: item.box.y + item.box.h / 2
                     };
@@ -162,7 +186,7 @@ class CanvasView {
             }
         }
 
-        return { node: null, relationship: null, hitHandle: false, hitInspectHandle: false, hitUnpin: false };
+        return { node: null, relationship: null, hitHandle: false, hitInspectHandle: false, hitPropFilter: false };
     }
 
     onMouseDown(e) {
@@ -178,6 +202,17 @@ class CanvasView {
 
         if (e.button === 0) {
             const hit = this.hitTest(e.clientX, e.clientY);
+
+            if (hit.hitPropFilter && hit.node) {
+                this.selectedNode = hit.node;
+                this.lastFocusedNode = hit.node;
+                this.selectedRelationship = null;
+                if (window.uiController) {
+                    window.uiController.togglePropertyQuickFilter(hit.node);
+                }
+                e.stopPropagation();
+                return;
+            }
 
             if (hit.hitInspectHandle && hit.node) {
                 this.selectedNode = hit.node;
@@ -266,11 +301,13 @@ class CanvasView {
         this.hasExceededDragThreshold = (totalDist >= this.dragThreshold);
 
         if (this.mode === "panning") {
+            if (window.uiController) window.uiController.closePropertyQuickFilter();
             this.camera.pan(dx, dy);
             return;
         }
 
         if (this.mode === "dragging_node" && this.selectedNode) {
+            if (window.uiController) window.uiController.closePropertyQuickFilter();
             const worldPos = this.camera.screenToWorld(e.clientX, e.clientY);
             this.selectedNode.x = worldPos.x + this.dragOffset.x;
             this.selectedNode.y = worldPos.y + this.dragOffset.y;
@@ -287,7 +324,10 @@ class CanvasView {
         const hit = this.hitTest(e.clientX, e.clientY);
         this.hoveredNode = hit.node;
         this.isActionHandleHovered = hit.hitHandle;
-        this.canvas.style.cursor = (hit.hitHandle || hit.hitInspectHandle) ? "pointer" : hit.relationship ? "pointer" : hit.node ? "grab" : "default";
+        this.isInspectHandleHovered = hit.hitInspectHandle;
+        this.isPropFilterHovered = hit.hitPropFilter && !hit.hitPropBadge;
+        this.isPropBadgeHovered = Boolean(hit.hitPropBadge);
+        this.canvas.style.cursor = (hit.hitHandle || hit.hitInspectHandle || hit.hitPropFilter) ? "pointer" : hit.relationship ? "pointer" : hit.node ? "grab" : "default";
     }
 
     onMouseUp(e) {
@@ -325,6 +365,7 @@ class CanvasView {
 
     onWheel(e) {
         e.preventDefault();
+        if (window.uiController) window.uiController.closePropertyQuickFilter();
         const factor = e.deltaY < 0 ? 1.1 : 0.9;
         this.camera.zoomAt(factor, e.clientX, e.clientY);
     }
@@ -806,17 +847,51 @@ class CanvasView {
             ctx.fillText(childCount.toString(), badgeX, badgeY);
         }
 
-        // Contextual Handles (Action ⚡ and Inspect 📝 on right)
+        // Property Count Badge (shows {N} if node has properties defined)
+        const propCount = Object.keys(node.properties || {}).length;
+        if (propCount > 0) {
+            const propBadgeX = node.x - m.width / 2 + 4;
+            const propBadgeY = node.y - m.height / 2 + 4;
+            const isBadgeHovered = this.isPropBadgeHovered && this.hoveredNode === node;
+            const rBadge = isBadgeHovered ? 11 : 9;
+
+            ctx.fillStyle = isBadgeHovered ? "#c084fc" : "rgba(168, 85, 247, 0.9)"; // Purple, lighter on hover
+            ctx.beginPath();
+            ctx.arc(propBadgeX, propBadgeY, rBadge, 0, Math.PI * 2);
+            ctx.fill();
+
+            if (isBadgeHovered) {
+                ctx.strokeStyle = "#ffffff";
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = "#fff";
+            ctx.font = isBadgeHovered ? "bold 10px system-ui" : "bold 9px system-ui";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(propCount.toString(), propBadgeX, propBadgeY);
+        }
+
+        // Contextual Handles (⚡ Action, 📝 Inspect, {} Prop Filter on right)
         if (isSelected || isHovered) {
             const handleX = node.x + m.width / 2 + 18;
             const inspectX = node.x + m.width / 2 + 42;
+            const propX = node.x + m.width / 2 + 66;
             const handleY = node.y;
 
             // 1. Action Handle (⚡)
-            ctx.fillStyle = this.isActionHandleHovered && isHovered ? "#ffdd44" : "rgba(255, 220, 60, 0.75)";
+            const isActionHovered = this.isActionHandleHovered && isHovered;
+            ctx.fillStyle = isActionHovered ? "#ffdd44" : "rgba(255, 220, 60, 0.75)";
             ctx.beginPath();
-            ctx.arc(handleX, handleY, 11, 0, Math.PI * 2);
+            ctx.arc(handleX, handleY, isActionHovered ? 12 : 11, 0, Math.PI * 2);
             ctx.fill();
+
+            if (isActionHovered) {
+                ctx.strokeStyle = "#ffffff";
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            }
 
             ctx.fillStyle = "#000";
             ctx.font = "bold 12px sans-serif";
@@ -825,14 +900,38 @@ class CanvasView {
             ctx.fillText("⚡", handleX, handleY);
 
             // 2. Inspect Handle (📝)
-            ctx.fillStyle = "rgba(56, 189, 248, 0.8)";
+            const isInspectHovered = this.isInspectHandleHovered && isHovered;
+            ctx.fillStyle = isInspectHovered ? "#38bdf8" : "rgba(56, 189, 248, 0.8)";
             ctx.beginPath();
-            ctx.arc(inspectX, handleY, 11, 0, Math.PI * 2);
+            ctx.arc(inspectX, handleY, isInspectHovered ? 12 : 11, 0, Math.PI * 2);
             ctx.fill();
+
+            if (isInspectHovered) {
+                ctx.strokeStyle = "#ffffff";
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            }
 
             ctx.fillStyle = "#000";
             ctx.font = "11px sans-serif";
             ctx.fillText("📝", inspectX, handleY);
+
+            // 3. Properties Quick-Filter Handle ({})
+            const isPropHovered = this.isPropFilterHovered && isHovered;
+            ctx.fillStyle = isPropHovered ? "#c084fc" : "rgba(168, 85, 247, 0.85)";
+            ctx.beginPath();
+            ctx.arc(propX, handleY, isPropHovered ? 12 : 11, 0, Math.PI * 2);
+            ctx.fill();
+
+            if (isPropHovered) {
+                ctx.strokeStyle = "#ffffff";
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = "#fff";
+            ctx.font = isPropHovered ? "bold 11px monospace" : "bold 10px monospace";
+            ctx.fillText("{}", propX, handleY);
         }
 
         ctx.restore();

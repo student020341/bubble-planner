@@ -34,6 +34,7 @@ class ActionRegistry {
             ["canvas:dblclick", "createBubble"],
             ["Escape", "drillUp"],
             ["KeyI", "inspectEntity"],
+            ["KeyP", "togglePropertyFilter"],
             ["KeyE", "editLabel"],
             ["KeyL", "editLabel"],
             ["Delete", "deleteSelection"],

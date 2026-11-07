@@ -51,6 +51,21 @@ actionRegistry.register({
 });
 
 actionRegistry.register({
+    id: "togglePropertyFilter",
+    title: "Property Filter",
+    description: "Open inline property quick-filter card on selected bubble",
+    target: "node",
+    isEnabled: () => Boolean(canvasView.selectedNode),
+    execute: (ctx) => {
+        const target = ctx.node || canvasView.selectedNode;
+        if (target) {
+            uiController.togglePropertyQuickFilter(target);
+        }
+    }
+});
+
+
+actionRegistry.register({
     id: "drillDown",
     title: "Enter Bubble",
     description: "Drill down into the selected bubble layer",
@@ -133,6 +148,15 @@ actionRegistry.register({
 // --- Keyboard Event Router ---
 
 window.addEventListener("keydown", (e) => {
+    // Priority: If Escape is pressed, let UIController dismiss the topmost open overlay/drawer
+    if (e.key === "Escape") {
+        if (uiController.handleEscape()) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+    }
+
     // Ignore key shortcuts if user is typing in an input, textarea, select, or drawer element
     const isEditing = (
         e.target instanceof HTMLInputElement ||
