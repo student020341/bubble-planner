@@ -35,10 +35,26 @@ actionRegistry.register({
     target: "global",
     isEnabled: () => store.currentParentId !== null,
     execute: (ctx) => {
-        store.currentParentId = ctx.targetParentId !== undefined ? ctx.targetParentId : null;
-        store.notify();
+        const targetParentId = ctx.targetParentId !== undefined ? ctx.targetParentId : null;
+        store.setLayer(targetParentId);
         canvasView.selectedNode = null;
         camera.fitToNodes(store.getVisibleNodes());
+    }
+});
+
+actionRegistry.register({
+    id: "toggleRecentLayer",
+    title: "Toggle Recent Layer",
+    description: "Switch view back and forth between the two most recently visited layers (B)",
+    target: "global",
+    isEnabled: () => store.previousParentId !== undefined && store.previousParentId !== store.currentParentId,
+    execute: () => {
+        if (store.toggleRecentLayer()) {
+            canvasView.selectedNode = null;
+            canvasView.lastFocusedNode = null;
+            canvasView.selectedRelationship = null;
+            camera.fitToNodes(store.getVisibleNodes());
+        }
     }
 });
 
@@ -242,6 +258,25 @@ actionRegistry.register({
         }
         if (uiController.isInspectorOpen && uiController.inspectedEntity === rel) {
             uiController.renderInspectorContent();
+        }
+    }
+});
+
+actionRegistry.register({
+    id: "moveNodeToLayer",
+    title: "Move Bubble to Layer",
+    description: "Move the selected bubble into another layer or to root level (M)",
+    target: "node",
+    isEnabled: (ctx) => {
+        const target = (ctx && ctx.node) || canvasView.selectedNode || 
+            (uiController.isInspectorOpen && uiController.inspectedEntity && uiController.inspectedEntity.hasOwnProperty("x") ? uiController.inspectedEntity : null);
+        return Boolean(target);
+    },
+    execute: (ctx) => {
+        const target = (ctx && ctx.node) || canvasView.selectedNode || 
+            (uiController.isInspectorOpen && uiController.inspectedEntity && uiController.inspectedEntity.hasOwnProperty("x") ? uiController.inspectedEntity : null);
+        if (target) {
+            uiController.openMovePalette(target);
         }
     }
 });
@@ -494,6 +529,9 @@ async function bootPersistence() {
             }
             if (savedSettings.alwaysSnapToGrid !== undefined) {
                 canvasView.alwaysSnapToGrid = savedSettings.alwaysSnapToGrid;
+            }
+            if (savedSettings.followOnMove !== undefined) {
+                uiController.followOnMove = savedSettings.followOnMove;
             }
         }
 

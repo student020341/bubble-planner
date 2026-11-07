@@ -81,6 +81,17 @@ class UIController {
         /** @type {number} */
         this.commandSelectedIndex = 0;
 
+        /** @type {HTMLElement|null} Move Node to Layer Palette modal */
+        this.movePalette = null;
+        /** @type {boolean} */
+        this.isMovePaletteOpen = false;
+        /** @type {BubbleNode|null} */
+        this.moveNodeTarget = null;
+        /** @type {number} */
+        this.moveSelectedIndex = 0;
+        /** @type {boolean} Whether camera follows bubble into new layer after moving */
+        this.followOnMove = false;
+
         /** @type {HTMLElement|null} Top-bar save status indicator */
         this.saveIndicator = null;
         /** @type {number|null} */
@@ -188,6 +199,10 @@ class UIController {
                 this.closeImportExportModal();
                 return true;
             }
+            if (top === "movePalette" && this.isMovePaletteOpen) {
+                this.closeMovePalette();
+                return true;
+            }
             if (top === "commandPalette" && this.isCommandPaletteOpen) {
                 this.closeCommandPalette();
                 return true;
@@ -215,6 +230,10 @@ class UIController {
         }
 
         // 4. Fallbacks in case an overlay was opened without stack tracking
+        if (this.isMovePaletteOpen) {
+            this.closeMovePalette();
+            return true;
+        }
         if (this.isCommandPaletteOpen) {
             this.closeCommandPalette();
             return true;
@@ -255,7 +274,8 @@ class UIController {
             autoCloseInspector: this.autoCloseInspector,
             dragThreshold: this.canvasView.dragThreshold,
             snapGridSize: this.canvasView.snapGridSize,
-            alwaysSnapToGrid: this.canvasView.alwaysSnapToGrid
+            alwaysSnapToGrid: this.canvasView.alwaysSnapToGrid,
+            followOnMove: Boolean(this.followOnMove)
         };
         await this.store.db.set("user_settings", settings);
         if (this.store.setSaveStatus) this.store.setSaveStatus("saved");
@@ -671,6 +691,32 @@ class UIController {
         `;
         document.body.appendChild(this.commandPalette);
 
+        // Floating Move Node to Layer Palette
+        this.movePalette = document.createElement("div");
+        this.movePalette.id = "move-palette";
+        this.movePalette.style.cssText = `
+            position: fixed;
+            top: 15%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 520px;
+            max-width: 90vw;
+            background: rgba(15, 23, 42, 0.97);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(99, 102, 241, 0.5);
+            border-radius: 10px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 20px rgba(99, 102, 241, 0.2);
+            display: none;
+            flex-direction: column;
+            z-index: 60;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #f1f5f9;
+            padding: 12px;
+            gap: 10px;
+            outline: none;
+        `;
+        document.body.appendChild(this.movePalette);
+
         // Floating Leader Key / Sequence HUD Indicator (Bottom-Center)
         this.sequenceIndicator = document.createElement("div");
         this.sequenceIndicator.id = "sequence-hud";
@@ -812,6 +858,12 @@ class UIController {
             if (this.isJumpPaletteOpen && this.jumpPalette) {
                 if (!this.jumpPalette.contains(e.target)) {
                     this.closeJumpPalette();
+                }
+            }
+            // Close move palette when clicking outside
+            if (this.isMovePaletteOpen && this.movePalette) {
+                if (!this.movePalette.contains(e.target)) {
+                    this.closeMovePalette();
                 }
             }
             // Close project menu when clicking outside
@@ -1646,18 +1698,16 @@ class UIController {
         if (!item) return;
 
         if (item.type === "root") {
-            this.store.currentParentId = null;
+            this.store.setLayer(null);
             this.canvasView.selectedNode = null;
             this.canvasView.selectedRelationship = null;
-            this.store.notify();
             this.camera.fitToNodes(this.store.getVisibleNodes());
         } else if (item.node) {
             const target = item.node;
             // Navigate to the layer containing target
-            this.store.currentParentId = target.parentId;
+            this.store.setLayer(target.parentId);
             this.canvasView.selectedNode = target;
             this.canvasView.selectedRelationship = null;
-            this.store.notify();
 
             // Center camera directly on target node
             this.camera.x = target.x;
@@ -1666,6 +1716,280 @@ class UIController {
         }
 
         this.closeJumpPalette();
+    }
+
+    // --- Move Node to Layer Palette ---
+
+    openMovePalette(node) {
+        if (!node) return;
+        this.moveNodeTarget = node;
+        this.isMovePaletteOpen = true;
+        this.pushOverlay("movePalette");
+        if (this.movePalette) {
+            this.movePalette.style.display = "flex";
+            this.moveSelectedIndex = 0;
+            this.renderMovePalette();
+        }
+    }
+
+    closeMovePalette() {
+        this.isMovePaletteOpen = false;
+        this.moveNodeTarget = null;
+        this.removeOverlay("movePalette");
+        if (this.movePalette) {
+            this.movePalette.style.display = "none";
+        }
+    }
+
+    renderMovePalette() {
+        if (!this.movePalette || !this.moveNodeTarget) return;
+        this.movePalette.innerHTML = "";
+        const node = this.moveNodeTarget;
+
+        // Search Input Header
+        const searchInput = document.createElement("input");
+        searchInput.type = "text";
+        searchInput.placeholder = `Move "${node.label}" to... (↑/↓ to navigate, Enter to move)`;
+        searchInput.style.cssText = `
+            background: rgba(30, 41, 59, 0.9);
+            border: 1px solid rgba(99, 102, 241, 0.6);
+            border-radius: 6px;
+            color: #f8fafc;
+            font-size: 14px;
+            padding: 8px 12px;
+            outline: none;
+            width: 100%;
+            box-sizing: border-box;
+            box-shadow: 0 0 10px rgba(99, 102, 241, 0.15);
+        `;
+
+        // Results Container
+        const resultsContainer = document.createElement("div");
+        resultsContainer.style.cssText = "display: flex; flex-direction: column; gap: 4px; max-height: 280px; overflow-y: auto; margin-top: 4px;";
+
+        const getMatches = (query) => {
+            const q = query.trim().toLowerCase();
+            const matches = [];
+
+            // Root layer option
+            const isCurrentRoot = node.parentId === null;
+            if (!q || "root".includes(q) || "project".includes(q)) {
+                matches.push({
+                    type: "root",
+                    label: "Root Layer",
+                    ns: "Root",
+                    node: null,
+                    isCurrent: isCurrentRoot,
+                    childCount: this.store.doc.nodes.filter(n => n.parentId === null && n.id !== node.id).length
+                });
+            }
+
+            // All valid target nodes (excluding self and any descendants)
+            for (const n of this.store.doc.nodes) {
+                if (n.id === node.id) continue; // Cannot parent to self
+                if (this.store.isDescendant(node.id, n.id)) continue; // Cannot parent to descendants
+
+                const ns = this.getNodeNamespace(n);
+                const label = n.label || "";
+                const desc = n.description || "";
+                const isCurrent = node.parentId === n.id;
+
+                if (!q || label.toLowerCase().includes(q) || ns.toLowerCase().includes(q) || desc.toLowerCase().includes(q)) {
+                    matches.push({
+                        type: "node",
+                        label: label,
+                        ns: ns,
+                        node: n,
+                        isCurrent: isCurrent,
+                        childCount: this.store.doc.nodes.filter(child => child.parentId === n.id && child.id !== node.id).length
+                    });
+                }
+            }
+
+            return matches.slice(0, 30);
+        };
+
+        let currentMatches = getMatches("");
+
+        const updateHighlight = () => {
+            Array.from(resultsContainer.children).forEach((child, i) => {
+                const isSel = i === this.moveSelectedIndex;
+                child.style.background = isSel ? "rgba(99, 102, 241, 0.25)" : "rgba(30, 41, 59, 0.5)";
+                child.style.borderColor = isSel ? "rgba(99, 102, 241, 0.6)" : "transparent";
+            });
+            const selEl = resultsContainer.children[this.moveSelectedIndex];
+            if (selEl && selEl.scrollIntoViewIfNeeded) {
+                selEl.scrollIntoViewIfNeeded(false);
+            }
+        };
+
+        const renderRows = () => {
+            resultsContainer.innerHTML = "";
+            if (currentMatches.length === 0) {
+                const empty = document.createElement("div");
+                empty.textContent = "No eligible destination layers found";
+                empty.style.cssText = "font-size: 12px; color: #64748b; font-style: italic; padding: 10px; text-align: center;";
+                resultsContainer.appendChild(empty);
+                return;
+            }
+
+            if (this.moveSelectedIndex >= currentMatches.length) {
+                this.moveSelectedIndex = Math.max(0, currentMatches.length - 1);
+            }
+
+            currentMatches.forEach((item, idx) => {
+                const isSelected = idx === this.moveSelectedIndex;
+                const row = document.createElement("div");
+                row.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 8px 10px;
+                    border-radius: 6px;
+                    background: ${isSelected ? "rgba(99, 102, 241, 0.25)" : "rgba(30, 41, 59, 0.5)"};
+                    border: 1px solid ${isSelected ? "rgba(99, 102, 241, 0.6)" : "transparent"};
+                    cursor: ${item.isCurrent ? "default" : "pointer"};
+                    opacity: ${item.isCurrent ? "0.6" : "1"};
+                    transition: all 0.1s ease;
+                `;
+
+                if (!item.isCurrent) {
+                    row.addEventListener("mouseenter", () => {
+                        this.moveSelectedIndex = idx;
+                        updateHighlight();
+                    });
+
+                    row.addEventListener("mousedown", (e) => {
+                        e.preventDefault();
+                        this.executeMoveNode(node, item);
+                    });
+
+                    row.addEventListener("click", () => {
+                        this.executeMoveNode(node, item);
+                    });
+                }
+
+                // Left: Icon + Label + Path
+                const left = document.createElement("div");
+                left.style.cssText = "display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;";
+
+                const icon = document.createElement("span");
+                icon.textContent = item.type === "root" ? "🏠" : (item.childCount > 0 ? "📁" : "🫧");
+                icon.style.cssText = "font-size: 14px; opacity: 0.9;";
+                left.appendChild(icon);
+
+                const info = document.createElement("div");
+                info.style.cssText = "display: flex; flex-direction: column; overflow: hidden;";
+
+                const titleRow = document.createElement("div");
+                titleRow.style.cssText = "font-size: 13px; font-weight: 600; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+                titleRow.textContent = item.label;
+                info.appendChild(titleRow);
+
+                const pathRow = document.createElement("div");
+                pathRow.style.cssText = "font-size: 11px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+                pathRow.textContent = item.ns.split(".").join(" › ");
+                info.appendChild(pathRow);
+
+                left.appendChild(info);
+                row.appendChild(left);
+
+                // Right: Badges
+                const right = document.createElement("div");
+                right.style.cssText = "display: flex; align-items: center; gap: 6px; margin-left: 8px;";
+
+                if (item.childCount > 0) {
+                    const badge = document.createElement("span");
+                    badge.textContent = `${item.childCount} inside`;
+                    badge.style.cssText = "font-size: 10px; background: rgba(99, 102, 241, 0.2); color: #a5b4fc; padding: 2px 6px; border-radius: 4px;";
+                    right.appendChild(badge);
+                }
+
+                if (item.isCurrent) {
+                    const curBadge = document.createElement("span");
+                    curBadge.textContent = "Current Parent";
+                    curBadge.style.cssText = "font-size: 10px; background: rgba(100, 116, 139, 0.2); color: #94a3b8; padding: 2px 6px; border-radius: 4px;";
+                    right.appendChild(curBadge);
+                } else {
+                    const moveBadge = document.createElement("span");
+                    moveBadge.textContent = "Move here ↵";
+                    moveBadge.style.cssText = "font-size: 10px; background: rgba(16, 185, 129, 0.15); color: #6ee7b7; padding: 2px 6px; border-radius: 4px;";
+                    right.appendChild(moveBadge);
+                }
+
+                row.appendChild(right);
+                resultsContainer.appendChild(row);
+            });
+
+            const selectedEl = resultsContainer.children[this.moveSelectedIndex];
+            if (selectedEl && selectedEl.scrollIntoViewIfNeeded) {
+                selectedEl.scrollIntoViewIfNeeded(false);
+            }
+        };
+
+        searchInput.addEventListener("input", () => {
+            this.moveSelectedIndex = 0;
+            currentMatches = getMatches(searchInput.value);
+            renderRows();
+        });
+
+        searchInput.addEventListener("keydown", (e) => {
+            if (e.key === "ArrowDown") {
+                e.preventDefault();
+                if (currentMatches.length > 0) {
+                    this.moveSelectedIndex = (this.moveSelectedIndex + 1) % currentMatches.length;
+                    updateHighlight();
+                }
+            } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                if (currentMatches.length > 0) {
+                    this.moveSelectedIndex = (this.moveSelectedIndex - 1 + currentMatches.length) % currentMatches.length;
+                    updateHighlight();
+                }
+            } else if (e.key === "Enter") {
+                e.preventDefault();
+                const chosen = currentMatches[this.moveSelectedIndex];
+                if (chosen && !chosen.isCurrent) {
+                    this.executeMoveNode(node, chosen);
+                }
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                this.closeMovePalette();
+            }
+        });
+
+        this.movePalette.appendChild(searchInput);
+        this.movePalette.appendChild(resultsContainer);
+        renderRows();
+
+        setTimeout(() => searchInput.focus(), 20);
+    }
+
+    executeMoveNode(node, targetItem) {
+        if (!node || !targetItem || targetItem.isCurrent) return;
+
+        const targetParentId = targetItem.type === "root" ? null : targetItem.node.id;
+        const success = this.store.moveNode(node.id, targetParentId);
+        this.closeMovePalette();
+
+        if (!success) return;
+
+        if (this.followOnMove) {
+            this.store.setLayer(targetParentId);
+            this.canvasView.selectedNode = node;
+            this.canvasView.selectedRelationship = null;
+            this.camera.x = node.x;
+            this.camera.y = node.y;
+            if (this.camera.onTransformChange) this.camera.onTransformChange();
+        } else {
+            // Stay where ever user is
+            if (this.canvasView.selectedNode && this.canvasView.selectedNode.id === node.id) {
+                this.canvasView.selectedNode = null;
+            }
+            if (this.isInspectorOpen && this.inspectedEntity && this.inspectedEntity.id === node.id) {
+                this.closeInspector();
+            }
+        }
     }
 
     // --- Command Palette (Spotlight / Actions Super Menu) ---
@@ -1969,6 +2293,9 @@ class UIController {
 
     openInspector(entity, options = {}) {
         if (!entity) return;
+        if (typeof options === "string") {
+            options = { focusSection: options };
+        }
         this.inspectedEntity = entity;
         this.isInspectorOpen = true;
         this.inspectorDrawer.style.display = "flex";
@@ -1983,6 +2310,21 @@ class UIController {
                     searchInput.select();
                 }
             }, 50);
+        }
+
+        if (options.focusSection === "crossLayer") {
+            setTimeout(() => {
+                const el = this.inspectorDrawer.querySelector("#inspector-cross-layer-section");
+                if (el) {
+                    el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                    el.style.outline = "2px solid rgba(245, 158, 11, 0.7)";
+                    el.style.borderRadius = "6px";
+                    el.style.transition = "outline 0.3s ease";
+                    setTimeout(() => {
+                        el.style.outline = "2px solid transparent";
+                    }, 1200);
+                }
+            }, 60);
         }
     }
 
@@ -2112,59 +2454,78 @@ class UIController {
             jumpRow.appendChild(createJumpBtn("To", toNode, "#fb923c"));
             body.appendChild(jumpRow);
 
-            // Action Visibility & Hide Toggle Card
+            // Action Visibility & Status Card
+            const isCrossLayer = fromNode && toNode && fromNode.parentId !== toNode.parentId;
             const visRow = document.createElement("div");
-            visRow.style.cssText = `
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                background: rgba(30, 41, 59, 0.5);
-                border: 1px solid rgba(51, 65, 85, 0.6);
-                border-radius: 6px;
-                padding: 8px 12px;
-                gap: 8px;
-            `;
 
-            const statusLabel = document.createElement("div");
-            statusLabel.style.cssText = "font-size: 11px; color: #94a3b8; display: flex; align-items: center; gap: 6px;";
-            statusLabel.innerHTML = entity.hidden 
-                ? `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#64748b;"></span> Hidden in Drawer`
-                : `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#38bdf8;"></span> Visible on Canvas`;
+            if (isCrossLayer) {
+                visRow.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    background: rgba(245, 158, 11, 0.12);
+                    border: 1px solid rgba(245, 158, 11, 0.4);
+                    border-radius: 6px;
+                    padding: 8px 12px;
+                    gap: 8px;
+                `;
+                const statusLabel = document.createElement("div");
+                statusLabel.style.cssText = "font-size: 11px; color: #fbbf24; display: flex; align-items: center; gap: 6px;";
+                statusLabel.innerHTML = `<span style="font-size: 13px;">🌐</span> <strong>Cross-Layer Action</strong> <span style="color:#94a3b8;">(External Link)</span>`;
+                visRow.appendChild(statusLabel);
+            } else {
+                visRow.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    background: rgba(30, 41, 59, 0.5);
+                    border: 1px solid rgba(51, 65, 85, 0.6);
+                    border-radius: 6px;
+                    padding: 8px 12px;
+                    gap: 8px;
+                `;
 
-            const hideBtn = document.createElement("button");
-            hideBtn.innerHTML = entity.hidden ? "👁️ Show on Canvas" : "👁️‍🗨️ Hide Action";
-            hideBtn.title = entity.hidden 
-                ? "Show this action line on the canvas"
-                : "Hide this action from the canvas and move to hidden drawer";
-            hideBtn.style.cssText = `
-                background: ${entity.hidden ? "rgba(56, 189, 248, 0.15)" : "rgba(100, 116, 139, 0.25)"};
-                border: 1px solid ${entity.hidden ? "rgba(56, 189, 248, 0.5)" : "rgba(100, 116, 139, 0.5)"};
-                color: ${entity.hidden ? "#38bdf8" : "#f1f5f9"};
-                border-radius: 4px;
-                padding: 4px 10px;
-                font-size: 11px;
-                font-weight: 600;
-                cursor: pointer;
-                transition: all 0.15s ease;
-            `;
-            hideBtn.addEventListener("mouseenter", () => {
-                hideBtn.style.background = entity.hidden ? "rgba(56, 189, 248, 0.25)" : "rgba(244, 63, 94, 0.2)";
-                hideBtn.style.borderColor = entity.hidden ? "#38bdf8" : "rgba(244, 63, 94, 0.5)";
-                if (!entity.hidden) hideBtn.style.color = "#fda4af";
-            });
-            hideBtn.addEventListener("mouseleave", () => {
-                hideBtn.style.background = entity.hidden ? "rgba(56, 189, 248, 0.15)" : "rgba(100, 116, 139, 0.25)";
-                hideBtn.style.borderColor = entity.hidden ? "rgba(56, 189, 248, 0.5)" : "rgba(100, 116, 139, 0.5)";
-                hideBtn.style.color = entity.hidden ? "#38bdf8" : "#f1f5f9";
-            });
-            hideBtn.addEventListener("click", () => {
-                entity.hidden = !entity.hidden;
-                this.store.notify();
-                this.renderInspectorContent();
-            });
+                const statusLabel = document.createElement("div");
+                statusLabel.style.cssText = "font-size: 11px; color: #94a3b8; display: flex; align-items: center; gap: 6px;";
+                statusLabel.innerHTML = entity.hidden 
+                    ? `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#64748b;"></span> Hidden in Drawer`
+                    : `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#38bdf8;"></span> Visible on Canvas`;
 
-            visRow.appendChild(statusLabel);
-            visRow.appendChild(hideBtn);
+                const hideBtn = document.createElement("button");
+                hideBtn.innerHTML = entity.hidden ? "👁️ Show on Canvas" : "👁️‍🗨️ Hide Action";
+                hideBtn.title = entity.hidden 
+                    ? "Show this action line on the canvas"
+                    : "Hide this action from the canvas and move to hidden drawer";
+                hideBtn.style.cssText = `
+                    background: ${entity.hidden ? "rgba(56, 189, 248, 0.15)" : "rgba(100, 116, 139, 0.25)"};
+                    border: 1px solid ${entity.hidden ? "rgba(56, 189, 248, 0.5)" : "rgba(100, 116, 139, 0.5)"};
+                    color: ${entity.hidden ? "#38bdf8" : "#f1f5f9"};
+                    border-radius: 4px;
+                    padding: 4px 10px;
+                    font-size: 11px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    transition: all 0.15s ease;
+                `;
+                hideBtn.addEventListener("mouseenter", () => {
+                    hideBtn.style.background = entity.hidden ? "rgba(56, 189, 248, 0.25)" : "rgba(244, 63, 94, 0.2)";
+                    hideBtn.style.borderColor = entity.hidden ? "#38bdf8" : "rgba(244, 63, 94, 0.5)";
+                    if (!entity.hidden) hideBtn.style.color = "#fda4af";
+                });
+                hideBtn.addEventListener("mouseleave", () => {
+                    hideBtn.style.background = entity.hidden ? "rgba(56, 189, 248, 0.15)" : "rgba(100, 116, 139, 0.25)";
+                    hideBtn.style.borderColor = entity.hidden ? "rgba(56, 189, 248, 0.5)" : "rgba(100, 116, 139, 0.5)";
+                    hideBtn.style.color = entity.hidden ? "#38bdf8" : "#f1f5f9";
+                });
+                hideBtn.addEventListener("click", () => {
+                    entity.hidden = !entity.hidden;
+                    this.store.notify();
+                    this.renderInspectorContent();
+                });
+
+                visRow.appendChild(statusLabel);
+                visRow.appendChild(hideBtn);
+            }
             body.appendChild(visRow);
         }
 
@@ -2236,6 +2597,39 @@ class UIController {
             relGroup.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
             this.renderCrossLayerConnectSection(relGroup, entity);
             body.appendChild(relGroup);
+
+            const nodeFooter = document.createElement("div");
+            nodeFooter.style.cssText = "margin-top: 8px; border-top: 1px solid rgba(51, 65, 85, 0.6); padding-top: 14px; display: flex; flex-direction: column; gap: 8px;";
+
+            const moveLayerBtn = document.createElement("button");
+            moveLayerBtn.textContent = "📦 Move to Layer";
+            moveLayerBtn.style.cssText = `
+                width: 100%;
+                background: rgba(99, 102, 241, 0.12);
+                border: 1px solid rgba(99, 102, 241, 0.35);
+                color: #a5b4fc;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: 500;
+                cursor: pointer;
+                transition: all 0.15s ease;
+            `;
+            moveLayerBtn.addEventListener("mouseenter", () => {
+                moveLayerBtn.style.background = "rgba(99, 102, 241, 0.25)";
+                moveLayerBtn.style.borderColor = "#6366f1";
+                moveLayerBtn.style.color = "#ffffff";
+            });
+            moveLayerBtn.addEventListener("mouseleave", () => {
+                moveLayerBtn.style.background = "rgba(99, 102, 241, 0.12)";
+                moveLayerBtn.style.borderColor = "rgba(99, 102, 241, 0.35)";
+                moveLayerBtn.style.color = "#a5b4fc";
+            });
+            moveLayerBtn.addEventListener("click", () => {
+                this.openMovePalette(entity);
+            });
+            nodeFooter.appendChild(moveLayerBtn);
+            body.appendChild(nodeFooter);
         } else {
             const actionFooter = document.createElement("div");
             actionFooter.style.cssText = "margin-top: 8px; border-top: 1px solid rgba(51, 65, 85, 0.6); padding-top: 14px;";
@@ -2409,8 +2803,19 @@ class UIController {
         const idToNode = new Map(this.store.doc.nodes.map(n => [n.id, n]));
         const allNodeRels = this.store.doc.relationships.filter(r => r.from === node.id || r.to === node.id);
 
-        const visibleRels = allNodeRels.filter(r => !r.hidden);
-        const hiddenRels = allNodeRels.filter(r => Boolean(r.hidden));
+        // Separate intra-layer actions from cross-layer actions
+        const intraRels = allNodeRels.filter(r => {
+            const other = idToNode.get(r.from === node.id ? r.to : r.from);
+            return other && other.parentId === node.parentId;
+        });
+
+        const crossLayerRels = allNodeRels.filter(r => {
+            const other = idToNode.get(r.from === node.id ? r.to : r.from);
+            return !other || other.parentId !== node.parentId;
+        });
+
+        const visibleRels = intraRels.filter(r => !r.hidden);
+        const hiddenRels = intraRels.filter(r => Boolean(r.hidden));
 
         // Helper to render an action item row
         const createActionRow = (rel, isVisibleSection) => {
@@ -2655,7 +3060,138 @@ class UIController {
         }
         parentEl.appendChild(hiddenContainer);
 
-        // --- Section 3: Connect to Any Bubble ---
+        // --- Section 3: Cross-Layer Actions (External Layers) ---
+        const crossSec = document.createElement("div");
+        crossSec.id = "inspector-cross-layer-section";
+        crossSec.style.cssText = "display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; padding: 4px; border-radius: 6px;";
+
+        const crossHeader = document.createElement("div");
+        crossHeader.style.cssText = "display: flex; justify-content: space-between; align-items: center;";
+        const crossTitle = document.createElement("span");
+        crossTitle.innerHTML = `<strong>Cross-Layer Actions</strong> <span style="color:#fbbf24; font-size:11px;">(${crossLayerRels.length})</span>`;
+        crossTitle.style.cssText = "font-size: 12px; color: #94a3b8;";
+        crossHeader.appendChild(crossTitle);
+        crossSec.appendChild(crossHeader);
+
+        const crossContainer = document.createElement("div");
+        crossContainer.style.cssText = "display: flex; flex-direction: column; gap: 5px; min-height: 28px; padding: 6px; border-radius: 6px; background: rgba(15, 23, 42, 0.4); border: 1px dashed rgba(245, 158, 11, 0.35);";
+
+        if (crossLayerRels.length === 0) {
+            const emptyMsg = document.createElement("div");
+            emptyMsg.textContent = "No actions connecting to other layers.";
+            emptyMsg.style.cssText = "font-size: 11px; color: #64748b; font-style: italic; padding: 4px;";
+            crossContainer.appendChild(emptyMsg);
+        } else {
+            for (const rel of crossLayerRels) {
+                const isOutgoing = rel.from === node.id;
+                const otherNode = idToNode.get(isOutgoing ? rel.to : rel.from);
+                const otherLabel = otherNode ? otherNode.label : `#${isOutgoing ? rel.to : rel.from}`;
+                const otherNs = otherNode ? this.getNodeNamespace(otherNode) : "External";
+
+                const row = document.createElement("div");
+                row.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    background: rgba(30, 41, 59, 0.7);
+                    border: 1px solid rgba(245, 158, 11, 0.4);
+                    border-left: 3px solid #fbbf24;
+                    border-radius: 4px;
+                    padding: 5px 8px;
+                    font-size: 12px;
+                    gap: 6px;
+                `;
+
+                // Left: Direction + Action + Other Node info
+                const leftCol = document.createElement("div");
+                leftCol.style.cssText = "display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; overflow: hidden;";
+
+                const titleRow = document.createElement("div");
+                titleRow.style.cssText = "display: flex; align-items: center; gap: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+                titleRow.innerHTML = `<span style="color:#fbbf24; font-weight:bold;">${isOutgoing ? "→" : "←"}</span> <strong style="color:#f8fafc;">${rel.label}</strong>`;
+                leftCol.appendChild(titleRow);
+
+                const subRow = document.createElement("div");
+                subRow.style.cssText = "font-size: 10px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+                subRow.textContent = `${isOutgoing ? "to" : "from"} ${otherLabel} (${otherNs.split(".").join(" › ")})`;
+                leftCol.appendChild(subRow);
+
+                row.appendChild(leftCol);
+
+                // Right: Jump Button + Inspect + Delete
+                const rightControls = document.createElement("div");
+                rightControls.style.cssText = "display: flex; align-items: center; gap: 4px;";
+
+                if (otherNode) {
+                    const jumpBtn = document.createElement("button");
+                    jumpBtn.innerHTML = "↗ Jump";
+                    jumpBtn.title = `Jump to layer containing "${otherLabel}"`;
+                    jumpBtn.style.cssText = `
+                        background: rgba(245, 158, 11, 0.15);
+                        border: 1px solid rgba(245, 158, 11, 0.4);
+                        border-radius: 3px;
+                        color: #fde68a;
+                        font-size: 10px;
+                        font-weight: 500;
+                        padding: 2px 6px;
+                        cursor: pointer;
+                        white-space: nowrap;
+                    `;
+                    jumpBtn.addEventListener("mouseenter", () => {
+                        jumpBtn.style.background = "rgba(245, 158, 11, 0.3)";
+                        jumpBtn.style.color = "#ffffff";
+                    });
+                    jumpBtn.addEventListener("mouseleave", () => {
+                        jumpBtn.style.background = "rgba(245, 158, 11, 0.15)";
+                        jumpBtn.style.color = "#fde68a";
+                    });
+                    jumpBtn.addEventListener("click", () => {
+                        this.store.setLayer(otherNode.parentId);
+                        this.canvasView.selectedNode = otherNode;
+                        this.canvasView.selectedRelationship = null;
+                        this.camera.x = otherNode.x;
+                        this.camera.y = otherNode.y;
+                        if (this.camera.onTransformChange) this.camera.onTransformChange();
+                        this.renderInspectorContent();
+                    });
+                    rightControls.appendChild(jumpBtn);
+                }
+
+                const inspectRelBtn = document.createElement("button");
+                inspectRelBtn.innerHTML = "📝";
+                inspectRelBtn.title = "Inspect this action";
+                inspectRelBtn.style.cssText = "background: transparent; border: none; font-size: 11px; cursor: pointer; padding: 2px;";
+                inspectRelBtn.addEventListener("click", () => this.openInspector(rel));
+                rightControls.appendChild(inspectRelBtn);
+
+                const delRelBtn = document.createElement("button");
+                delRelBtn.innerHTML = "✕";
+                delRelBtn.title = "Delete this action";
+                delRelBtn.style.cssText = "background: transparent; border: none; color: #94a3b8; font-size: 12px; cursor: pointer; padding: 2px 4px;";
+                delRelBtn.addEventListener("mouseenter", () => delRelBtn.style.color = "#f43f5e");
+                delRelBtn.addEventListener("mouseleave", () => delRelBtn.style.color = "#94a3b8");
+                delRelBtn.addEventListener("click", async () => {
+                    const confirmed = await this.customConfirm(
+                        `Delete action "${rel.label}"?`,
+                        "Delete Action",
+                        true,
+                        "Delete"
+                    );
+                    if (confirmed) {
+                        this.store.removeRelationship(rel.id);
+                        this.renderInspectorContent();
+                    }
+                });
+                rightControls.appendChild(delRelBtn);
+
+                row.appendChild(rightControls);
+                crossContainer.appendChild(row);
+            }
+        }
+        crossSec.appendChild(crossContainer);
+        parentEl.appendChild(crossSec);
+
+        // --- Section 4: Connect to Any Bubble ---
         const searchTitle = document.createElement("span");
         searchTitle.textContent = "Connect to Any Bubble (Cross-Layer)";
         searchTitle.style.cssText = "font-size: 12px; font-weight: 600; color: #94a3b8;";
@@ -3034,6 +3570,23 @@ class UIController {
         });
         row5.appendChild(slider5);
         list.appendChild(row5);
+
+        // Setting 6: Follow Bubble on Move Checkbox
+        const row6 = document.createElement("label");
+        row6.style.cssText = "display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: #e2e8f0; margin-top: 6px;";
+        const check6 = document.createElement("input");
+        check6.type = "checkbox";
+        check6.checked = Boolean(this.followOnMove);
+        check6.style.cursor = "pointer";
+        check6.addEventListener("change", () => {
+            this.followOnMove = check6.checked;
+            this.saveSettings();
+        });
+        const span6 = document.createElement("span");
+        span6.textContent = "Follow bubble to target layer after moving";
+        row6.appendChild(check6);
+        row6.appendChild(span6);
+        list.appendChild(row6);
 
         panel.appendChild(list);
         return panel;
@@ -4059,7 +4612,9 @@ class UIController {
                 <div>• <strong style="color: #f1f5f9;">Create Bubble:</strong> Double-click empty canvas</div>
                 <div>• <strong style="color: #f1f5f9;">Enter Sub-Layer:</strong> Double-click any bubble node</div>
                 <div>• <strong style="color: #f1f5f9;">Leave Sub-Layer:</strong> Press <kbd style="background: #1e293b; padding: 1px 5px; border-radius: 4px; border: 1px solid #475569;">Esc</kbd> or click breadcrumbs up top</div>
-                <div>• <strong style="color: #f1f5f9;">Jump Directly:</strong> Click <strong style="color: #38bdf8;">🔍 Jump</strong> to search and jump to any layer instantly</div>
+                <div>• <strong style="color: #f1f5f9;">Jump Directly:</strong> Press <kbd style="background: #1e293b; padding: 1px 5px; border-radius: 4px; border: 1px solid #475569;">J</kbd> or click <strong style="color: #38bdf8;">🔍 Jump</strong> to search and jump to any layer instantly</div>
+                <div>• <strong style="color: #f1f5f9;">Move Bubble:</strong> Select bubble and press <kbd style="background: #1e293b; padding: 1px 5px; border-radius: 4px; border: 1px solid #475569;">M</kbd> (or use Inspector) to move it to another layer</div>
+                <div>• <strong style="color: #f1f5f9;">Toggle Recent Layer:</strong> Press <kbd style="background: #1e293b; padding: 1px 5px; border-radius: 4px; border: 1px solid #475569;">B</kbd> to alternate back and forth between your last two visited layers</div>
             </div>
         `;
         content.appendChild(sec1);
@@ -4074,6 +4629,7 @@ class UIController {
             <div style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(51, 65, 85, 0.6); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 6px;">
                 <div>• <strong style="color: #f1f5f9;">Drag ⚡ handle:</strong> Drag from one bubble to another to establish a directional relationship</div>
                 <div>• <strong style="color: #f1f5f9;">Click {} handle:</strong> Opens property quick-filter card for that bubble</div>
+                <div>• <strong style="color: #f1f5f9;">Hide Action:</strong> Press <kbd style="background: #1e293b; padding: 1px 5px; border-radius: 4px; border: 1px solid #475569;">H</kbd> while an action is focused to move it into the hidden drawer</div>
                 <div>• <strong style="color: #f1f5f9;">Hold Shift:</strong> Snaps dragged bubbles to the grid interval</div>
             </div>
         `;

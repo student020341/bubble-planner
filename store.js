@@ -43,6 +43,8 @@ class ProjectStore {
 
         /** @type {number|null} Active view level (null = root level) */
         this.currentParentId = null;
+        /** @type {number|null} Previously active view level for back-and-forth toggle */
+        this.previousParentId = null;
 
         /** @type {Array<() => void>} Change listeners */
         this.listeners = [];
@@ -95,7 +97,19 @@ class ProjectStore {
         }
     }
 
-    // --- Navigation ---
+    // --- Navigation & Layer Movement ---
+
+    /**
+     * Set the current layer (parentId), updating layer history for quick toggling.
+     * @param {number|null} newParentId
+     */
+    setLayer(newParentId) {
+        if (this.currentParentId !== newParentId) {
+            this.previousParentId = this.currentParentId;
+            this.currentParentId = newParentId;
+            this.notify();
+        }
+    }
 
     /**
      * Drill down into a bubble.
@@ -104,8 +118,7 @@ class ProjectStore {
     enterBubble(nodeId) {
         const target = this.doc.nodes.find(n => n.id === nodeId);
         if (target) {
-            this.currentParentId = nodeId;
-            this.notify();
+            this.setLayer(nodeId);
         }
     }
 
@@ -115,8 +128,81 @@ class ProjectStore {
     leaveBubble() {
         if (this.currentParentId == null) return;
         const current = this.currentBubble;
-        this.currentParentId = current ? current.parentId : null;
+        this.setLayer(current ? current.parentId : null);
+    }
+
+    /**
+     * Toggle view back and forth between the two most recently visited layers.
+     * @returns {boolean} Whether layer was toggled
+     */
+    toggleRecentLayer() {
+        if (this.previousParentId === undefined) return false;
+        // Verify previous parent still exists if it is not null
+        if (this.previousParentId !== null && !this.doc.nodes.some(n => n.id === this.previousParentId)) {
+            this.previousParentId = null;
+        }
+        if (this.previousParentId === this.currentParentId) return false;
+
+        const temp = this.currentParentId;
+        this.currentParentId = this.previousParentId;
+        this.previousParentId = temp;
         this.notify();
+        return true;
+    }
+
+    /**
+     * Check if potentialDescendantId is in the subtree of ancestorId.
+     * @param {number} ancestorId
+     * @param {number|null} potentialDescendantId
+     * @returns {boolean}
+     */
+    isDescendant(ancestorId, potentialDescendantId) {
+        if (potentialDescendantId === null || potentialDescendantId === undefined) return false;
+        if (ancestorId === potentialDescendantId) return true;
+        let curr = this.doc.nodes.find(n => n.id === potentialDescendantId);
+        const visited = new Set();
+        while (curr && !visited.has(curr.id)) {
+            visited.add(curr.id);
+            if (curr.parentId === ancestorId) return true;
+            if (curr.parentId === null || curr.parentId === undefined) break;
+            curr = this.doc.nodes.find(n => n.id === curr.parentId);
+        }
+        return false;
+    }
+
+    /**
+     * Move a bubble to a new parent layer.
+     * Prevents self-parenting and cyclic descendant-parenting.
+     * @param {number} nodeId
+     * @param {number|null} newParentId
+     * @returns {boolean} Whether move succeeded
+     */
+    moveNode(nodeId, newParentId) {
+        const node = this.doc.nodes.find(n => n.id === nodeId);
+        if (!node) return false;
+        if (node.parentId === newParentId) return false;
+        if (node.id === newParentId) return false;
+        if (this.isDescendant(node.id, newParentId)) return false;
+
+        node.parentId = newParentId;
+
+        // Position placed cleanly in target layer
+        const siblingNodes = this.doc.nodes.filter(n => n.parentId === newParentId && n.id !== node.id);
+        if (siblingNodes.length > 0) {
+            let maxX = -Infinity, maxY = -Infinity;
+            for (const s of siblingNodes) {
+                if (s.x > maxX) maxX = s.x;
+                if (s.y > maxY) maxY = s.y;
+            }
+            node.x = maxX + 180;
+            node.y = maxY;
+        } else {
+            node.x = 400;
+            node.y = 300;
+        }
+
+        this.notify();
+        return true;
     }
 
     /**
@@ -142,14 +228,47 @@ class ProjectStore {
     }
 
     /**
-     * Get relationships relevant to the visible nodes.
-     * Intra-layer actions are directly between visible nodes.
-     * Cross-layer actions involve at least one node in the visible layer.
+     * Get relationships visible on the current canvas layer (both endpoints in current layer).
      * @returns {BubbleRelationship[]}
      */
     getVisibleRelationships() {
         const visibleIds = new Set(this.getVisibleNodes().map(n => n.id));
-        return this.doc.relationships.filter(r => visibleIds.has(r.from) || visibleIds.has(r.to));
+        return this.doc.relationships.filter(r => visibleIds.has(r.from) && visibleIds.has(r.to));
+    }
+
+    /**
+     * Get external cross-layer relationships involving a specific node.
+     * @param {number} nodeId
+     * @returns {BubbleRelationship[]}
+     */
+    getNodeCrossLayerRelationships(nodeId) {
+        const node = this.doc.nodes.find(n => n.id === nodeId);
+        if (!node) return [];
+        const currentParentId = node.parentId;
+        const idToNode = new Map(this.doc.nodes.map(n => [n.id, n]));
+        return this.doc.relationships.filter(r => {
+            if (r.from === nodeId) {
+                const other = idToNode.get(r.to);
+                return other && other.parentId !== currentParentId;
+            }
+            if (r.to === nodeId) {
+                const other = idToNode.get(r.from);
+                return other && other.parentId !== currentParentId;
+            }
+            return false;
+        });
+    }
+
+    /**
+     * Get all relationships connecting into or out of the current view layer.
+     * @returns {BubbleRelationship[]}
+     */
+    getCrossLayerRelationships() {
+        const visibleIds = new Set(this.getVisibleNodes().map(n => n.id));
+        return this.doc.relationships.filter(r => 
+            (visibleIds.has(r.from) && !visibleIds.has(r.to)) || 
+            (!visibleIds.has(r.from) && visibleIds.has(r.to))
+        );
     }
 
     // --- Node Actions ---

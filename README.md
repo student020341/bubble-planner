@@ -58,13 +58,16 @@ Bubbles represent entities, subsystems, components, or thoughts.
 - **Drill Down (Enter Layer):** Double-click any bubble node to enter its isolated internal canvas.
 - **Drill Up (Leave Layer):** Press `Esc` or click the breadcrumbs at the top of the screen.
 - **Jump to Layer (`Ctrl+K` / `J`):** Search for any bubble name across the entire project to jump straight into it.
+- **Move to Layer (`M`):** Re-parent the selected bubble into another layer or root level with cycle prevention.
+- **Toggle Recent Layer (`B`):** Quick-toggle view back and forth between the two most recently visited layers.
 - **Grid Snapping:** Hold `Shift` while dragging to snap bubbles to the grid.
 
 ### 2. Directional Connections & Actions
 Connect bubbles to describe actions, data flow, API calls, or relationships.
 - **Connect Bubbles:** Hover over a bubble to reveal the floating `⚡` connector handle on its right side. Click and drag from the handle to a target bubble.
 - **Rename Action:** Double-click the action pill on the connector line, or select it and press `E` or `L`.
-- **Hide Action:** Click "Hide Action" in the Inspector to declutter the canvas and move the action into the connected bubbles' hidden drawer.
+- **Hide Action:** Click "Hide Action" in the Inspector or press `H` to declutter the canvas and move the action into the connected bubbles' hidden drawer.
+- **Cross-Layer Actions:** When actions connect bubbles across different layers, they are kept off the canvas to avoid clutter. Bubbles with external connections display an amber `↗` badge; clicking the badge opens the Inspector focused on its **Cross-Layer Actions** drawer, featuring one-click `↗ Jump` buttons to teleport to connected layers.
 - **Re-route Action:** Click and drag either the source or target pill of an action to reconnect it to a different bubble.
 - **Action Details:** Select an action and press `I` to view and edit its description and custom properties.
 
@@ -86,6 +89,8 @@ Attach structured metadata to entities and relationships.
 | `Escape` | **Leave Bubble** | Drill up to the parent bubble or root layer |
 | `Ctrl + Space` | **Actions Palette** | Open palette to search and run all editor commands |
 | `Ctrl + K` or `J` | **Jump to Layer** | Fuzzy search across all layers and jump to a bubble |
+| `M` | **Move to Layer** | Open Move Palette to relocate selected bubble to any layer |
+| `B` | **Toggle Recent Layer** | Quick-toggle view between the two most recently visited layers |
 | `E` or `L` | **Edit Label** | Rename selected bubble or connection |
 | `H` | **Hide Action** | Hide selected action from canvas and move to hidden drawer |
 | `P` | **Property Filter** | Open inline property quick-filter card on selection |

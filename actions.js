@@ -42,6 +42,8 @@ class ActionRegistry {
             ["KeyE", "editLabel"],
             ["KeyL", "editLabel"],
             ["KeyH", "hideAction"],
+            ["KeyM", "moveNodeToLayer"],
+            ["KeyB", "toggleRecentLayer"],
             ["Delete", "deleteSelection"],
             ["Backspace", "deleteSelection"],
             ["Ctrl+Comma", "openSettings"]

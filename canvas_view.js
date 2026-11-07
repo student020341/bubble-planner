@@ -46,6 +46,8 @@ class CanvasView {
         this.isPropFilterHovered = false;
         /** @type {boolean} */
         this.isPropBadgeHovered = false;
+        /** @type {boolean} */
+        this.isExtBadgeHovered = false;
 
         /** @type {number} Distance in screen pixels before mouse down counts as a drag */
         this.dragThreshold = 20;
@@ -150,7 +152,21 @@ class CanvasView {
                 const propBadgeX = node.x - m.width / 2 + 4;
                 const propBadgeY = node.y - m.height / 2 + 4;
                 if (Math.hypot(worldPos.x - propBadgeX, worldPos.y - propBadgeY) <= 14) {
-                    return { node, relationship: null, hitHandle: false, hitInspectHandle: false, hitPropFilter: true, hitPropBadge: true };
+                    return { node, relationship: null, hitHandle: false, hitInspectHandle: false, hitPropFilter: true, hitPropBadge: true, hitExtBadge: false };
+                }
+            }
+        }
+
+        // 2b. Check external action badge ↗ on visible nodes
+        for (let i = nodes.length - 1; i >= 0; i--) {
+            const node = nodes[i];
+            const extCount = this.store.getNodeCrossLayerRelationships ? this.store.getNodeCrossLayerRelationships(node.id).length : 0;
+            if (extCount > 0) {
+                const m = this.computeNodeMetrics(node);
+                const extBadgeX = node.x - m.width / 2 + 4;
+                const extBadgeY = node.y + m.height / 2 - 4;
+                if (Math.hypot(worldPos.x - extBadgeX, worldPos.y - extBadgeY) <= 14) {
+                    return { node, relationship: null, hitHandle: false, hitInspectHandle: false, hitPropFilter: false, hitPropBadge: false, hitExtBadge: true };
                 }
             }
         }
@@ -237,6 +253,17 @@ class CanvasView {
                 this.selectedRelationship = null;
                 if (window.uiController) {
                     window.uiController.togglePropertyQuickFilter(hit.node);
+                }
+                e.stopPropagation();
+                return;
+            }
+
+            if (hit.hitExtBadge && hit.node) {
+                this.selectedNode = hit.node;
+                this.lastFocusedNode = hit.node;
+                this.selectedRelationship = null;
+                if (window.uiController) {
+                    window.uiController.openInspector(hit.node, { focusSection: "crossLayer" });
                 }
                 e.stopPropagation();
                 return;
@@ -362,7 +389,8 @@ class CanvasView {
         this.isInspectHandleHovered = hit.hitInspectHandle;
         this.isPropFilterHovered = hit.hitPropFilter && !hit.hitPropBadge;
         this.isPropBadgeHovered = Boolean(hit.hitPropBadge);
-        this.canvas.style.cursor = (hit.hitHandle || hit.hitInspectHandle || hit.hitPropFilter) ? "pointer" : hit.relationship ? "pointer" : hit.node ? "grab" : "default";
+        this.isExtBadgeHovered = Boolean(hit.hitExtBadge);
+        this.canvas.style.cursor = (hit.hitHandle || hit.hitInspectHandle || hit.hitPropFilter || hit.hitExtBadge) ? "pointer" : hit.relationship ? "pointer" : hit.node ? "grab" : "default";
     }
 
     onMouseUp(e) {
@@ -511,7 +539,6 @@ class CanvasView {
 
         // Group intra-layer relationships by undirected pair (nodeA < nodeB)
         const pairGroups = new Map();
-        const crossLayerRels = [];
 
         for (const rel of rels) {
             const isFromVis = visibleIds.has(rel.from);
@@ -530,8 +557,6 @@ class CanvasView {
                     });
                 }
                 pairGroups.get(pairKey).rels.push(rel);
-            } else {
-                crossLayerRels.push(rel);
             }
         }
 
@@ -589,34 +614,9 @@ class CanvasView {
             }
         }
 
-        // Cross-layer descriptors
-        for (const rel of crossLayerRels) {
-            const fromNode = idToNode.get(rel.from);
-            const toNode = idToNode.get(rel.to);
-            if (!fromNode || !toNode) continue;
-
-            const isFromVis = visibleIds.has(rel.from);
-            const visibleNode = isFromVis ? fromNode : toNode;
-            const otherNode = isFromVis ? toNode : fromNode;
-            const isIncoming = !isFromVis;
-
-            pendingLabels.push({
-                isCrossLayer: true,
-                node: visibleNode,
-                otherNode,
-                label: rel.label,
-                isIncoming,
-                rel
-            });
-        }
-
         // Pass 2: Draw all label pills ON TOP of all trunk lines
         for (const desc of pendingLabels) {
-            if (desc.isCrossLayer) {
-                this.drawCrossLayerIndicator(ctx, desc.node, desc.otherNode, desc.label, desc.isIncoming, desc.rel);
-            } else {
-                this.drawCenteredPillLabel(ctx, desc);
-            }
+            this.drawCenteredPillLabel(ctx, desc);
         }
     }
 
@@ -925,6 +925,44 @@ class CanvasView {
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.fillText(propCount.toString(), propBadgeX, propBadgeY);
+        }
+
+        // External Cross-Layer Action Badge (shows ↗ or {N}↗ if node links to other layers)
+        const extRels = this.store.getNodeCrossLayerRelationships ? this.store.getNodeCrossLayerRelationships(node.id) : [];
+        const extCount = extRels.length;
+        if (extCount > 0) {
+            const extBadgeX = node.x - m.width / 2 + 4;
+            const extBadgeY = node.y + m.height / 2 - 4;
+            const isBadgeHovered = this.isExtBadgeHovered && this.hoveredNode === node;
+            const rBadge = isBadgeHovered ? 11 : 9;
+
+            const tag = extCount > 1 ? `${extCount}↗` : "↗";
+            ctx.font = isBadgeHovered ? "bold 10px system-ui" : "bold 9px system-ui";
+            const tw = ctx.measureText(tag).width;
+            const pillW = Math.max(rBadge * 2, tw + 8);
+            const pillH = rBadge * 2;
+            const pillX = extBadgeX - rBadge;
+            const pillY = extBadgeY - rBadge;
+
+            ctx.fillStyle = isBadgeHovered ? "#fbbf24" : "rgba(245, 158, 11, 0.95)";
+            ctx.beginPath();
+            ctx.roundRect(pillX, pillY, pillW, pillH, rBadge);
+            ctx.fill();
+
+            if (isBadgeHovered) {
+                ctx.strokeStyle = "#ffffff";
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            } else {
+                ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = "#ffffff";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(tag, pillX + pillW / 2, extBadgeY);
         }
 
         // Contextual Handles (⚡ Action, 📝 Inspect, {} Prop Filter on right)
