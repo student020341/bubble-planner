@@ -22,7 +22,8 @@ Live demo: https://student020341.github.io/bubble-planner/
 - **Data Persistence & Portability:**
   - **IndexedDB Multi-Project Persistence:** Seamless local storage supporting switching, creating, duplicating, renaming, and deleting projects.
   - **Lossless JSON Export & Import:** Full-fidelity backups including viewports, hierarchies, and custom property schemas.
-  - **Token-Efficient Outline Export:** Produces clean, tab-indented outlines with encoded literals (`\n`, `\t`) and structured `_description`, `_properties`, and `_rels` blocks—tailored for LLM prompting, documentation, and markdown notes.
+  - **Token-Efficient Outline Export:** Produces clean, tab-indented outlines with encoded literals (`\n`, `\t`) and structured `_description`, `_properties`, and `_rels` blocks.
+  - **Markdown Documentation & AI Ingestion Export:** Formats complete namespaced type hierarchies, scalar property tables, and typed method signatures for technical specs and prompt ingestion.
 
 ---
 
@@ -128,6 +129,16 @@ Authentication Service
 		_properties
 			engine: redis
 ```
+
+### 3. Markdown Documentation (`AI Ingestion & Technical Specs`)
+Use **Export Markdown (Doc/AI)** in the Settings drawer or Actions Palette (`Ctrl+Space`) to generate full system ontology documentation:
+- **Namespaced Type Paths:** Namespaces every entity hierarchically (`Postal Service.Customer Location`).
+- **Typed Method Signatures:** Formats actions as callable signatures with destination entities and action properties as typed parameters:
+  ```text
+  deliver_mail(target: Postal Service.Customer Location, tracking_id: text, priority: number)
+  ```
+- **Entity Specifications:** Documents descriptions, scalar property tables, sub-components, and inbound action references.
+- **Consolidated System Directory:** Summarizes all inter-entity actions in a complete system matrix.
 
 ---
 

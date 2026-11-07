@@ -683,5 +683,224 @@ class ProjectStore {
 
         return lines.join("\n");
     }
+
+    /**
+     * Compute the fully qualified dot-delimited namespace for a node.
+     * E.g. "Postal Service.Customer Location"
+     * @param {number} nodeId
+     * @param {Map<number, BubbleNode>} [idToNode]
+     * @returns {string}
+     */
+    getNodeNamespace(nodeId, idToNode = null) {
+        if (!idToNode) {
+            idToNode = new Map(this.doc.nodes.map(n => [n.id, n]));
+        }
+        const parts = [];
+        let curr = idToNode.get(nodeId);
+        const visited = new Set();
+        while (curr && !visited.has(curr.id)) {
+            visited.add(curr.id);
+            const label = curr.label && curr.label.trim() ? curr.label.trim() : `Node#${curr.id}`;
+            parts.unshift(label);
+            if (curr.parentId === null || curr.parentId === undefined) {
+                break;
+            }
+            curr = idToNode.get(curr.parentId);
+        }
+        return parts.length > 0 ? parts.join(".") : `#${nodeId}`;
+    }
+
+    /**
+     * Export complete system architecture and entity ontology as structured Markdown
+     * for technical documentation and unambiguous AI ingestion.
+     * @returns {string}
+     */
+    exportMarkdown() {
+        const idToNode = new Map(this.doc.nodes.map(n => [n.id, n]));
+        const childrenMap = new Map();
+        for (const node of this.doc.nodes) {
+            const pid = node.parentId;
+            if (!childrenMap.has(pid)) childrenMap.set(pid, []);
+            childrenMap.get(pid).push(node);
+        }
+
+        const outRels = new Map();
+        const inRels = new Map();
+        for (const rel of this.doc.relationships) {
+            if (!outRels.has(rel.from)) outRels.set(rel.from, []);
+            outRels.get(rel.from).push(rel);
+
+            if (!inRels.has(rel.to)) inRels.set(rel.to, []);
+            inRels.get(rel.to).push(rel);
+        }
+
+        const escapeTableCell = (str) => {
+            if (!str) return "-";
+            return String(str).replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+        };
+
+        const lines = [];
+
+        // 1. Document Title & Header
+        const projectName = (this.projectName || "System Architecture").trim();
+        lines.push(`# System Architecture Documentation: ${projectName}`);
+        lines.push("");
+        lines.push("> Auto-generated system ontology, type specifications, and action signatures for technical documentation and AI ingestion.");
+        lines.push("");
+
+        // 2. Scalar Primitives / Types
+        const registeredTypes = Array.isArray(this.doc.types) && this.doc.types.length > 0 ? this.doc.types : ["text", "number"];
+        lines.push("## Registered Scalar Types");
+        lines.push("");
+        for (const t of registeredTypes) {
+            lines.push(`- \`${t}\``);
+        }
+        lines.push("");
+
+        // 3. Types / Entities Section
+        lines.push("## Types & Components");
+        lines.push("");
+
+        const dumpTypeMarkdown = (node) => {
+            const ns = this.getNodeNamespace(node.id, idToNode);
+            const parentNode = node.parentId !== null && node.parentId !== undefined ? idToNode.get(node.parentId) : null;
+            const parentNs = parentNode ? this.getNodeNamespace(parentNode.id, idToNode) : "*(Root Level)*";
+
+            lines.push(`### \`${ns}\``);
+            lines.push("");
+            lines.push(`- **Namespace**: \`${ns}\``);
+            lines.push(`- **Type Name**: ${node.label || "*(Unnamed)*"}`);
+            lines.push(`- **Parent**: ${parentNode ? `\`${parentNs}\`` : "*(Root Level)*"}`);
+            lines.push("");
+
+            // Description
+            lines.push("#### Description");
+            if (node.description && node.description.trim()) {
+                lines.push(node.description.trim());
+            } else {
+                lines.push("*No description provided.*");
+            }
+            lines.push("");
+
+            // Properties
+            lines.push("#### Properties");
+            const props = Object.entries(node.properties || {});
+            if (props.length > 0) {
+                lines.push("| Property | Scalar Type |");
+                lines.push("| :--- | :--- |");
+                for (const [k, v] of props) {
+                    lines.push(`| \`${escapeTableCell(k)}\` | \`${escapeTableCell(v)}\` |`);
+                }
+            } else {
+                lines.push("*No custom properties defined.*");
+            }
+            lines.push("");
+
+            // Child Types
+            const children = childrenMap.get(node.id) || [];
+            if (children.length > 0) {
+                lines.push("#### Child Types / Sub-Components");
+                for (const child of children) {
+                    const childNs = this.getNodeNamespace(child.id, idToNode);
+                    lines.push(`- \`${childNs}\``);
+                }
+                lines.push("");
+            }
+
+            // Actions (Outgoing)
+            const rels = outRels.get(node.id) || [];
+            lines.push("#### Actions & Methods");
+            if (rels.length > 0) {
+                for (const r of rels) {
+                    const targetNode = idToNode.get(r.to);
+                    const targetNs = targetNode ? this.getNodeNamespace(targetNode.id, idToNode) : `#${r.to}`;
+                    const actionName = (r.label && r.label.trim()) || "action";
+
+                    // Build parameter signature: target + action properties
+                    const relProps = Object.entries(r.properties || {});
+                    const paramSignatures = [`target: ${targetNs}`];
+                    for (const [k, v] of relProps) {
+                        paramSignatures.push(`${k}: ${v}`);
+                    }
+                    const signature = `${actionName}(${paramSignatures.join(", ")})`;
+
+                    lines.push(`##### \`${signature}\``);
+                    lines.push("");
+                    lines.push(`- **Target**: \`${targetNs}\``);
+                    if (r.description && r.description.trim()) {
+                        lines.push(`- **Description**: ${r.description.trim()}`);
+                    } else {
+                        lines.push("- **Description**: *No description provided.*");
+                    }
+                    lines.push("- **Parameters**:");
+                    lines.push("  | Parameter | Type | Source | Description / Notes |");
+                    lines.push("  | :--- | :--- | :--- | :--- |");
+                    lines.push(`  | \`target\` | \`${escapeTableCell(targetNs)}\` | Destination | Target receiving entity |`);
+                    for (const [k, v] of relProps) {
+                        lines.push(`  | \`${escapeTableCell(k)}\` | \`${escapeTableCell(v)}\` | Action Property | Parameter for this action |`);
+                    }
+                    lines.push("");
+                }
+            } else {
+                lines.push("*No outgoing actions defined.*");
+                lines.push("");
+            }
+
+            // Inbound Actions
+            const inbound = inRels.get(node.id) || [];
+            if (inbound.length > 0) {
+                lines.push("#### Inbound Actions");
+                for (const inRel of inbound) {
+                    const sourceNode = idToNode.get(inRel.from);
+                    const sourceNs = sourceNode ? this.getNodeNamespace(sourceNode.id, idToNode) : `#${inRel.from}`;
+                    const actionName = (inRel.label && inRel.label.trim()) || "action";
+                    lines.push(`- From \`${sourceNs}\`: \`${actionName}\``);
+                }
+                lines.push("");
+            }
+
+            lines.push("---");
+            lines.push("");
+
+            // Recursively process children
+            for (const child of children) {
+                dumpTypeMarkdown(child);
+            }
+        };
+
+        const roots = childrenMap.get(null) || [];
+        for (const root of roots) {
+            dumpTypeMarkdown(root);
+        }
+
+        // 4. Consolidated Actions Summary Table
+        lines.push("## System Actions Directory");
+        lines.push("");
+        lines.push("Complete listing of all actions connecting entities across the system.");
+        lines.push("");
+
+        if (this.doc.relationships.length > 0) {
+            lines.push("| Action / Method | Source | Target | Parameters | Description |");
+            lines.push("| :--- | :--- | :--- | :--- | :--- |");
+            for (const rel of this.doc.relationships) {
+                const sourceNode = idToNode.get(rel.from);
+                const targetNode = idToNode.get(rel.to);
+                const sourceNs = sourceNode ? this.getNodeNamespace(sourceNode.id, idToNode) : `#${rel.from}`;
+                const targetNs = targetNode ? this.getNodeNamespace(targetNode.id, idToNode) : `#${rel.to}`;
+                const actionName = (rel.label && rel.label.trim()) || "action";
+                const relProps = Object.entries(rel.properties || {});
+                const paramStr = relProps.length > 0 ? relProps.map(([k, v]) => `${k}: ${v}`).join(", ") : "*(none)*";
+                const desc = rel.description && rel.description.trim() ? rel.description.trim() : "-";
+
+                lines.push(`| \`${escapeTableCell(actionName)}\` | \`${escapeTableCell(sourceNs)}\` | \`${escapeTableCell(targetNs)}\` | \`${escapeTableCell(paramStr)}\` | ${escapeTableCell(desc)} |`);
+            }
+            lines.push("");
+        } else {
+            lines.push("*No relationships or actions defined in project.*");
+            lines.push("");
+        }
+
+        return lines.join("\n");
+    }
 }
 

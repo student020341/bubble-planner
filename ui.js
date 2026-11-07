@@ -109,14 +109,19 @@ class UIController {
             this.updateProjectSelectorLabel();
             this.renderBreadcrumbs();
             if (this.activeFilterNode) {
-                const nodeStillVisible = this.store.getVisibleNodes().some(n => n.id === this.activeFilterNode.id);
-                if (!nodeStillVisible) {
-                    this.closePropertyQuickFilter();
+                const isNode = this.activeFilterNode.hasOwnProperty("x");
+                let entityStillVisible = false;
+                if (isNode) {
+                    entityStillVisible = this.store.getVisibleNodes().some(n => n.id === this.activeFilterNode.id);
                 } else {
-                    const isTypingInFilter = this.propFilterCard && this.propFilterCard.contains(document.activeElement);
-                    if (!isTypingInFilter) {
-                        this.renderPropertyQuickFilterContent();
+                    const rel = this.store.doc.relationships.find(r => r.id === this.activeFilterNode.id);
+                    if (rel) {
+                        const visibleNodeIds = new Set(this.store.getVisibleNodes().map(n => n.id));
+                        entityStillVisible = visibleNodeIds.has(rel.from) && visibleNodeIds.has(rel.to);
                     }
+                }
+                if (!entityStillVisible) {
+                    this.closePropertyQuickFilter();
                 }
             }
             if (this.isInspectorOpen && this.inspectedEntity) {
@@ -817,6 +822,7 @@ class UIController {
             }
             if (this.propFilterCard && this.propFilterCard.style.display !== "none") {
                 if (this.propFilterCard.contains(e.target)) return;
+                if (e.target && (e.target.tagName === "OPTION" || e.target.tagName === "SELECT")) return;
                 if (e.target === this.canvasView.canvas) {
                     const hit = this.canvasView.hitTest(e.clientX, e.clientY);
                     if (hit.hitPropFilter) {
@@ -1062,16 +1068,22 @@ class UIController {
                     keyInput.style.background = "rgba(15, 23, 42, 0.8)";
                     keyInput.style.borderColor = "#c084fc";
                 });
+                let isCommitted = false;
                 keyInput.addEventListener("blur", () => {
                     keyInput.style.background = "transparent";
                     keyInput.style.borderColor = "transparent";
-                    commitKeyChange();
+                    if (!isCommitted) commitKeyChange();
                 });
                 keyInput.addEventListener("keydown", (e) => {
                     if (e.key === "Enter") {
-                        keyInput.blur();
+                        e.stopPropagation();
+                        e.preventDefault();
+                        isCommitted = true;
+                        commitKeyChange();
+                        this.propFilterCard.focus();
                     } else if (e.key === "Escape") {
                         keyInput.value = key;
+                        isCommitted = true;
                         keyInput.blur();
                         this.propFilterCard.focus();
                         e.stopPropagation();
@@ -1109,12 +1121,13 @@ class UIController {
                 // Type Dropdown Select
                 const typeSelect = document.createElement("select");
                 typeSelect.style.cssText = `
-                    background: rgba(168, 85, 247, 0.15);
-                    border: 1px solid rgba(168, 85, 247, 0.4);
+                    background: #1e1b4b;
+                    border: 1px solid rgba(168, 85, 247, 0.6);
                     border-radius: 4px;
-                    color: #c084fc;
+                    color: #f3e8ff;
                     font-family: monospace;
                     font-size: 10px;
+                    font-weight: 600;
                     padding: 2px 4px;
                     cursor: pointer;
                     outline: none;
@@ -1123,6 +1136,7 @@ class UIController {
                     const opt = document.createElement("option");
                     opt.value = t;
                     opt.textContent = t;
+                    opt.style.cssText = "background: #0f172a; color: #f8fafc;";
                     if (t === type) opt.selected = true;
                     typeSelect.appendChild(opt);
                 }
@@ -3478,6 +3492,16 @@ class UIController {
         exportOutlineBtn.addEventListener("click", () => this.openExportOutlineModal());
         grid.appendChild(exportOutlineBtn);
 
+        // 4. Export Markdown (Doc/AI) button
+        const exportMarkdownBtn = document.createElement("button");
+        exportMarkdownBtn.innerHTML = "📝 Export Markdown (Doc/AI)";
+        exportMarkdownBtn.title = "Export full namespaced system documentation and method signatures for AI ingestion";
+        exportMarkdownBtn.style.cssText = btnStyle;
+        exportMarkdownBtn.addEventListener("mouseenter", () => exportMarkdownBtn.style.background = "rgba(16, 185, 129, 0.15)");
+        exportMarkdownBtn.addEventListener("mouseleave", () => exportMarkdownBtn.style.background = "rgba(30, 41, 59, 0.8)");
+        exportMarkdownBtn.addEventListener("click", () => this.openExportMarkdownModal());
+        grid.appendChild(exportMarkdownBtn);
+
         panel.appendChild(grid);
         return panel;
     }
@@ -3638,6 +3662,133 @@ class UIController {
             URL.revokeObjectURL(url);
         });
         footer.appendChild(downloadOutlineBtn);
+
+        const cancelBtn = document.createElement("button");
+        cancelBtn.textContent = "Close";
+        cancelBtn.style.cssText = `
+            background: transparent;
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            color: #94a3b8;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
+            cursor: pointer;
+        `;
+        cancelBtn.addEventListener("click", () => this.closeImportExportModal());
+        footer.appendChild(cancelBtn);
+
+        this.importExportModal.appendChild(footer);
+        setTimeout(() => textarea.focus(), 30);
+    }
+
+    /**
+     * Open interactive Markdown Documentation Export modal.
+     */
+    openExportMarkdownModal() {
+        if (!this.importExportModal) return;
+        this.isImportExportModalOpen = true;
+        this.pushOverlay("importExport");
+        this.importExportModal.style.display = "flex";
+        this.importExportModal.innerHTML = "";
+
+        // Modal Header
+        const header = document.createElement("div");
+        header.style.cssText = "display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(51, 65, 85, 0.8); padding-bottom: 8px;";
+
+        const title = document.createElement("h3");
+        title.textContent = "📝 Export Markdown Documentation (AI Ingestion)";
+        title.style.cssText = "margin: 0; font-size: 15px; font-weight: 600; color: #f1f5f9;";
+        header.appendChild(title);
+
+        const closeBtn = document.createElement("button");
+        closeBtn.innerHTML = "✕";
+        closeBtn.style.cssText = "background: transparent; border: none; color: #94a3b8; font-size: 16px; cursor: pointer; padding: 2px 6px;";
+        closeBtn.addEventListener("click", () => this.closeImportExportModal());
+        header.appendChild(closeBtn);
+        this.importExportModal.appendChild(header);
+
+        // Description
+        const desc = document.createElement("p");
+        desc.style.cssText = "margin: 0; font-size: 12px; color: #94a3b8; line-height: 1.4;";
+        desc.textContent = "Complete namespaced system documentation with typed method signatures, properties, and relationships. Optimized for AI prompts, technical specs, and Markdown viewers.";
+        this.importExportModal.appendChild(desc);
+
+        // Textarea
+        const textarea = document.createElement("textarea");
+        textarea.style.cssText = `
+            flex: 1;
+            min-height: 260px;
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid rgba(51, 65, 85, 0.9);
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            padding: 10px;
+            resize: vertical;
+            outline: none;
+            tab-size: 4;
+        `;
+        textarea.value = this.store.exportMarkdown();
+        textarea.readOnly = true;
+        this.importExportModal.appendChild(textarea);
+
+        // Footer Actions
+        const footer = document.createElement("div");
+        footer.style.cssText = "display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 4px;";
+
+        const copyBtn = document.createElement("button");
+        copyBtn.textContent = "📋 Copy to Clipboard";
+        copyBtn.style.cssText = `
+            background: rgba(16, 185, 129, 0.2);
+            border: 1px solid rgba(16, 185, 129, 0.5);
+            color: #34d399;
+            border-radius: 6px;
+            padding: 6px 14px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+        `;
+        copyBtn.addEventListener("click", async () => {
+            try {
+                await navigator.clipboard.writeText(textarea.value);
+                copyBtn.textContent = "✓ Copied!";
+                setTimeout(() => { copyBtn.textContent = "📋 Copy to Clipboard"; }, 1500);
+            } catch {
+                textarea.select();
+                document.execCommand("copy");
+                copyBtn.textContent = "✓ Copied!";
+                setTimeout(() => { copyBtn.textContent = "📋 Copy to Clipboard"; }, 1500);
+            }
+        });
+        footer.appendChild(copyBtn);
+
+        const downloadMdBtn = document.createElement("button");
+        downloadMdBtn.textContent = "💾 Download .md";
+        downloadMdBtn.style.cssText = `
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            color: #cbd5e1;
+            border-radius: 6px;
+            padding: 6px 14px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+        `;
+        downloadMdBtn.addEventListener("click", () => {
+            const safeName = (this.store.projectName || "project").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+            const blob = new Blob([textarea.value], { type: "text/markdown" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `${safeName}-architecture.md`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+        footer.appendChild(downloadMdBtn);
 
         const cancelBtn = document.createElement("button");
         cancelBtn.textContent = "Close";

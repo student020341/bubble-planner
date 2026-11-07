@@ -103,6 +103,16 @@ actionRegistry.register({
 });
 
 actionRegistry.register({
+    id: "exportMarkdown",
+    title: "Export Markdown Documentation",
+    description: "Export namespaced ontology and typed method signatures for AI ingestion and docs",
+    target: "global",
+    execute: () => {
+        uiController.openExportMarkdownModal();
+    }
+});
+
+actionRegistry.register({
     id: "openGuide",
     title: "Quick Guide & Help",
     description: "Open the fundamentals quick guide and overview",
