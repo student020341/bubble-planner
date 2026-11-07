@@ -64,6 +64,7 @@ Bubbles represent entities, subsystems, components, or thoughts.
 Connect bubbles to describe actions, data flow, API calls, or relationships.
 - **Connect Bubbles:** Hover over a bubble to reveal the floating `⚡` connector handle on its right side. Click and drag from the handle to a target bubble.
 - **Rename Action:** Double-click the action pill on the connector line, or select it and press `E` or `L`.
+- **Hide Action:** Click "Hide Action" in the Inspector to declutter the canvas and move the action into the connected bubbles' hidden drawer.
 - **Re-route Action:** Click and drag either the source or target pill of an action to reconnect it to a different bubble.
 - **Action Details:** Select an action and press `I` to view and edit its description and custom properties.
 
@@ -86,6 +87,7 @@ Attach structured metadata to entities and relationships.
 | `Ctrl + Space` | **Actions Palette** | Open palette to search and run all editor commands |
 | `Ctrl + K` or `J` | **Jump to Layer** | Fuzzy search across all layers and jump to a bubble |
 | `E` or `L` | **Edit Label** | Rename selected bubble or connection |
+| `H` | **Hide Action** | Hide selected action from canvas and move to hidden drawer |
 | `P` | **Property Filter** | Open inline property quick-filter card on selection |
 | `I` | **Inspect Item** | Open inspector drawer for selected bubble or action |
 | `Delete` / `Backspace` | **Delete Selection** | Prompt to delete selected bubble or connection |

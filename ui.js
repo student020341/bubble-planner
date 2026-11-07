@@ -2014,16 +2014,29 @@ class UIController {
         titleBox.style.cssText = "display: flex; align-items: center; gap: 8px;";
 
         const badge = document.createElement("span");
-        badge.textContent = isNode ? "Bubble" : "Action";
-        badge.style.cssText = `
-            background: ${isNode ? "rgba(56, 189, 248, 0.2)" : "rgba(251, 146, 60, 0.2)"};
-            color: ${isNode ? "#38bdf8" : "#fb923c"};
-            border: 1px solid ${isNode ? "rgba(56, 189, 248, 0.4)" : "rgba(251, 146, 60, 0.4)"};
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 600;
-        `;
+        if (isNode) {
+            badge.textContent = "Bubble";
+            badge.style.cssText = `
+                background: rgba(56, 189, 248, 0.2);
+                color: #38bdf8;
+                border: 1px solid rgba(56, 189, 248, 0.4);
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: 600;
+            `;
+        } else {
+            badge.textContent = entity.hidden ? "Action (Hidden)" : "Action";
+            badge.style.cssText = `
+                background: ${entity.hidden ? "rgba(100, 116, 139, 0.25)" : "rgba(251, 146, 60, 0.2)"};
+                color: ${entity.hidden ? "#94a3b8" : "#fb923c"};
+                border: 1px solid ${entity.hidden ? "rgba(100, 116, 139, 0.5)" : "rgba(251, 146, 60, 0.4)"};
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: 600;
+            `;
+        }
 
         const title = document.createElement("span");
         title.textContent = entity.label;
@@ -2052,7 +2065,7 @@ class UIController {
         const body = document.createElement("div");
         body.style.cssText = "padding: 16px; display: flex; flex-direction: column; gap: 20px;";
 
-        // 0. If Action: Render From -> To Navigation Jump Buttons
+        // 0. If Action: Render From -> To Navigation Jump Buttons & Visibility Card
         if (!isNode) {
             const idToNode = new Map(this.store.doc.nodes.map(n => [n.id, n]));
             const fromNode = idToNode.get(entity.from);
@@ -2098,6 +2111,61 @@ class UIController {
             jumpRow.appendChild(createJumpBtn("From", fromNode, "#38bdf8"));
             jumpRow.appendChild(createJumpBtn("To", toNode, "#fb923c"));
             body.appendChild(jumpRow);
+
+            // Action Visibility & Hide Toggle Card
+            const visRow = document.createElement("div");
+            visRow.style.cssText = `
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                background: rgba(30, 41, 59, 0.5);
+                border: 1px solid rgba(51, 65, 85, 0.6);
+                border-radius: 6px;
+                padding: 8px 12px;
+                gap: 8px;
+            `;
+
+            const statusLabel = document.createElement("div");
+            statusLabel.style.cssText = "font-size: 11px; color: #94a3b8; display: flex; align-items: center; gap: 6px;";
+            statusLabel.innerHTML = entity.hidden 
+                ? `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#64748b;"></span> Hidden in Drawer`
+                : `<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#38bdf8;"></span> Visible on Canvas`;
+
+            const hideBtn = document.createElement("button");
+            hideBtn.innerHTML = entity.hidden ? "👁️ Show on Canvas" : "👁️‍🗨️ Hide Action";
+            hideBtn.title = entity.hidden 
+                ? "Show this action line on the canvas"
+                : "Hide this action from the canvas and move to hidden drawer";
+            hideBtn.style.cssText = `
+                background: ${entity.hidden ? "rgba(56, 189, 248, 0.15)" : "rgba(100, 116, 139, 0.25)"};
+                border: 1px solid ${entity.hidden ? "rgba(56, 189, 248, 0.5)" : "rgba(100, 116, 139, 0.5)"};
+                color: ${entity.hidden ? "#38bdf8" : "#f1f5f9"};
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.15s ease;
+            `;
+            hideBtn.addEventListener("mouseenter", () => {
+                hideBtn.style.background = entity.hidden ? "rgba(56, 189, 248, 0.25)" : "rgba(244, 63, 94, 0.2)";
+                hideBtn.style.borderColor = entity.hidden ? "#38bdf8" : "rgba(244, 63, 94, 0.5)";
+                if (!entity.hidden) hideBtn.style.color = "#fda4af";
+            });
+            hideBtn.addEventListener("mouseleave", () => {
+                hideBtn.style.background = entity.hidden ? "rgba(56, 189, 248, 0.15)" : "rgba(100, 116, 139, 0.25)";
+                hideBtn.style.borderColor = entity.hidden ? "rgba(56, 189, 248, 0.5)" : "rgba(100, 116, 139, 0.5)";
+                hideBtn.style.color = entity.hidden ? "#38bdf8" : "#f1f5f9";
+            });
+            hideBtn.addEventListener("click", () => {
+                entity.hidden = !entity.hidden;
+                this.store.notify();
+                this.renderInspectorContent();
+            });
+
+            visRow.appendChild(statusLabel);
+            visRow.appendChild(hideBtn);
+            body.appendChild(visRow);
         }
 
         // 1. Label Field
@@ -2168,6 +2236,48 @@ class UIController {
             relGroup.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
             this.renderCrossLayerConnectSection(relGroup, entity);
             body.appendChild(relGroup);
+        } else {
+            const actionFooter = document.createElement("div");
+            actionFooter.style.cssText = "margin-top: 8px; border-top: 1px solid rgba(51, 65, 85, 0.6); padding-top: 14px;";
+
+            const deleteActionBtn = document.createElement("button");
+            deleteActionBtn.textContent = "🗑️ Delete Action";
+            deleteActionBtn.style.cssText = `
+                width: 100%;
+                background: rgba(244, 63, 94, 0.1);
+                border: 1px solid rgba(244, 63, 94, 0.3);
+                color: #fda4af;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: 500;
+                cursor: pointer;
+                transition: all 0.15s ease;
+            `;
+            deleteActionBtn.addEventListener("mouseenter", () => {
+                deleteActionBtn.style.background = "rgba(244, 63, 94, 0.25)";
+                deleteActionBtn.style.borderColor = "#f43f5e";
+                deleteActionBtn.style.color = "#ffffff";
+            });
+            deleteActionBtn.addEventListener("mouseleave", () => {
+                deleteActionBtn.style.background = "rgba(244, 63, 94, 0.1)";
+                deleteActionBtn.style.borderColor = "rgba(244, 63, 94, 0.3)";
+                deleteActionBtn.style.color = "#fda4af";
+            });
+            deleteActionBtn.addEventListener("click", async () => {
+                const confirmed = await this.customConfirm(
+                    `Delete action "${entity.label}"?`,
+                    "Delete Action",
+                    true,
+                    "Delete"
+                );
+                if (confirmed) {
+                    this.store.removeRelationship(entity.id);
+                    this.closeInspector();
+                }
+            });
+            actionFooter.appendChild(deleteActionBtn);
+            body.appendChild(actionFooter);
         }
 
         this.inspectorDrawer.appendChild(body);

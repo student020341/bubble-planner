@@ -41,6 +41,7 @@ class ActionRegistry {
             ["KeyP", "togglePropertyFilter"],
             ["KeyE", "editLabel"],
             ["KeyL", "editLabel"],
+            ["KeyH", "hideAction"],
             ["Delete", "deleteSelection"],
             ["Backspace", "deleteSelection"],
             ["Ctrl+Comma", "openSettings"]

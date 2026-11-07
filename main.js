@@ -222,6 +222,31 @@ actionRegistry.register({
 });
 
 actionRegistry.register({
+    id: "hideAction",
+    title: "Hide Action",
+    description: "Hide selected action from canvas and move to hidden drawer",
+    target: "relationship",
+    isEnabled: (ctx) => {
+        const target = (ctx && ctx.relationship) || canvasView.selectedRelationship || 
+            (uiController.isInspectorOpen && uiController.inspectedEntity && !uiController.inspectedEntity.hasOwnProperty("x") ? uiController.inspectedEntity : null);
+        return Boolean(target);
+    },
+    execute: (ctx) => {
+        const rel = (ctx && ctx.relationship) || canvasView.selectedRelationship || 
+            (uiController.isInspectorOpen && uiController.inspectedEntity && !uiController.inspectedEntity.hasOwnProperty("x") ? uiController.inspectedEntity : null);
+        if (!rel) return;
+        rel.hidden = !rel.hidden;
+        store.notify();
+        if (rel.hidden && canvasView.selectedRelationship === rel) {
+            canvasView.selectedRelationship = null;
+        }
+        if (uiController.isInspectorOpen && uiController.inspectedEntity === rel) {
+            uiController.renderInspectorContent();
+        }
+    }
+});
+
+actionRegistry.register({
     id: "deleteSelection",
     title: "Delete Selection",
     description: "Delete the selected bubble or relationship",
