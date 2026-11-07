@@ -42,6 +42,9 @@ class UIController {
         /** @type {boolean} */
         this.isSettingsOpen = false;
 
+        /** @type {string} Active search filter query for settings drawer */
+        this.settingsSearchQuery = "";
+
         /** @type {boolean} Whether to automatically open inspector when an entity is focused */
         this.autoOpenInspector = false;
 
@@ -82,6 +85,21 @@ class UIController {
         this.saveIndicator = null;
         /** @type {number|null} */
         this._savedFadeTimeout = null;
+
+        /** @type {HTMLElement|null} Import / Export Outline Modal */
+        this.importExportModal = null;
+        /** @type {boolean} */
+        this.isImportExportModalOpen = false;
+
+        /** @type {HTMLElement|null} Guide / Help Modal */
+        this.guideModal = null;
+        /** @type {boolean} */
+        this.isGuideModalOpen = false;
+
+        /** @type {HTMLElement|null} Custom Dialog / Alert / Confirm / Prompt Modal */
+        this.dialogModal = null;
+        /** @type {boolean} */
+        this.isDialogOpen = false;
 
         this.mount();
         if (this.store) {
@@ -153,6 +171,18 @@ class UIController {
         // 3. Pop topmost overlay from stack
         while (this.overlayStack.length > 0) {
             const top = this.overlayStack.pop();
+            if (top === "dialog" && this.isDialogOpen) {
+                this.closeDialog(null);
+                return true;
+            }
+            if (top === "guide" && this.isGuideModalOpen) {
+                this.closeGuideModal();
+                return true;
+            }
+            if (top === "importExport" && this.isImportExportModalOpen) {
+                this.closeImportExportModal();
+                return true;
+            }
             if (top === "commandPalette" && this.isCommandPaletteOpen) {
                 this.closeCommandPalette();
                 return true;
@@ -290,7 +320,7 @@ class UIController {
         // Settings gear button (left of breadcrumbs)
         const gearBtn = document.createElement("button");
         gearBtn.innerHTML = "⚙️";
-        gearBtn.title = "Settings / System Menu (Ctrl+, / Cmd+,)";
+        gearBtn.title = "Settings / System Menu";
         gearBtn.style.cssText = `
             background: transparent;
             border: 1px solid rgba(100, 116, 139, 0.4);
@@ -380,8 +410,8 @@ class UIController {
 
         // Command Palette (Actions Super Menu) button
         const actionsBtn = document.createElement("button");
-        actionsBtn.innerHTML = "⚡ Actions (Ctrl+Space)";
-        actionsBtn.title = "Open Command Palette / Search all actions (Ctrl+Space / Cmd+Space)";
+        actionsBtn.innerHTML = "⚡ Actions";
+        actionsBtn.title = "Open Command Palette / Search all actions";
         actionsBtn.style.cssText = `
             background: rgba(30, 41, 59, 0.8);
             border: 1px solid rgba(51, 65, 85, 0.8);
@@ -407,8 +437,8 @@ class UIController {
 
         // Jump to Bubble / Layer Search button
         const jumpBtn = document.createElement("button");
-        jumpBtn.innerHTML = "🔍 Jump (Ctrl+K)";
-        jumpBtn.title = "Jump to any bubble or layer (Ctrl+K / Cmd+K / J)";
+        jumpBtn.innerHTML = "🔍 Jump";
+        jumpBtn.title = "Jump to any bubble or layer";
         jumpBtn.style.cssText = `
             background: rgba(30, 41, 59, 0.8);
             border: 1px solid rgba(51, 65, 85, 0.8);
@@ -433,8 +463,9 @@ class UIController {
         rightBar.appendChild(jumpBtn);
 
         const inspectBtn = document.createElement("button");
-        inspectBtn.innerHTML = "📝 Inspect (I)";
+        inspectBtn.innerHTML = "📝 Inspect";
         inspectBtn.title = "Inspect selected item";
+
         inspectBtn.style.cssText = `
             background: rgba(30, 41, 59, 0.8);
             border: 1px solid rgba(51, 65, 85, 0.8);
@@ -450,9 +481,36 @@ class UIController {
             if (target) {
                 this.toggleInspector(target);
             } else {
-                window.alert("Select a bubble or connection first to inspect it.");
+                this.customAlert("Select a bubble or connection first to inspect it.", "Inspection Notice");
             }
         });
+        // Help / Guide button (?)
+        const guideBtn = document.createElement("button");
+        guideBtn.innerHTML = "❓ Guide";
+        guideBtn.title = "Open Quick Guide & Default Controls";
+        guideBtn.style.cssText = `
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            border-radius: 6px;
+            color: #cbd5e1;
+            font-size: 12px;
+            padding: 4px 10px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        `;
+        guideBtn.addEventListener("mouseenter", () => {
+            guideBtn.style.background = "rgba(16, 185, 129, 0.2)";
+            guideBtn.style.borderColor = "rgba(16, 185, 129, 0.6)";
+            guideBtn.style.color = "#6ee7b7";
+        });
+        guideBtn.addEventListener("mouseleave", () => {
+            guideBtn.style.background = "rgba(30, 41, 59, 0.8)";
+            guideBtn.style.borderColor = "rgba(51, 65, 85, 0.8)";
+            guideBtn.style.color = "#cbd5e1";
+        });
+        guideBtn.addEventListener("click", () => this.toggleGuideModal());
+        rightBar.appendChild(guideBtn);
+
         rightBar.appendChild(inspectBtn);
         this.topBar.appendChild(rightBar);
 
@@ -634,8 +692,104 @@ class UIController {
         `;
         document.body.appendChild(this.sequenceIndicator);
 
+        // Floating Import / Export Outline Modal
+        this.importExportModal = document.createElement("div");
+        this.importExportModal.id = "import-export-modal";
+        this.importExportModal.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 620px;
+            max-width: 92vw;
+            max-height: 85vh;
+            background: rgba(15, 23, 42, 0.98);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(56, 189, 248, 0.5);
+            border-radius: 10px;
+            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8), 0 0 30px rgba(56, 189, 248, 0.2);
+            display: none;
+            flex-direction: column;
+            z-index: 70;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #f1f5f9;
+            padding: 18px;
+            gap: 12px;
+            outline: none;
+        `;
+        document.body.appendChild(this.importExportModal);
+
+        // Floating Quick Guide Modal
+        this.guideModal = document.createElement("div");
+        this.guideModal.id = "guide-modal";
+        this.guideModal.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 580px;
+            max-width: 92vw;
+            max-height: 85vh;
+            background: rgba(15, 23, 42, 0.98);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(16, 185, 129, 0.5);
+            border-radius: 10px;
+            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8), 0 0 30px rgba(16, 185, 129, 0.2);
+            display: none;
+            flex-direction: column;
+            z-index: 75;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #f1f5f9;
+            padding: 18px;
+            gap: 14px;
+            outline: none;
+            overflow-y: auto;
+        `;
+        document.body.appendChild(this.guideModal);
+
+        // Floating Custom Dialog Modal (Alert / Confirm / Prompt)
+        this.dialogModal = document.createElement("div");
+        this.dialogModal.id = "custom-dialog-modal";
+        this.dialogModal.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 440px;
+            max-width: 90vw;
+            background: rgba(15, 23, 42, 0.99);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(56, 189, 248, 0.6);
+            border-radius: 10px;
+            box-shadow: 0 30px 70px rgba(0, 0, 0, 0.85), 0 0 35px rgba(56, 189, 248, 0.25);
+            display: none;
+            flex-direction: column;
+            z-index: 120;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #f1f5f9;
+            padding: 20px;
+            gap: 14px;
+            outline: none;
+        `;
+        document.body.appendChild(this.dialogModal);
+
         // Close dropdowns and overlays when clicking outside
         window.addEventListener("mousedown", (e) => {
+            // Close guide modal when clicking outside
+            if (this.isGuideModalOpen && this.guideModal) {
+                if (!this.guideModal.contains(e.target)) {
+                    this.closeGuideModal();
+                }
+            }
+
+            // Close import/export modal when clicking outside
+            if (this.isImportExportModalOpen && this.importExportModal) {
+                if (!this.importExportModal.contains(e.target)) {
+                    this.closeImportExportModal();
+                }
+            }
+
+
             // Close command palette when clicking outside
             if (this.isCommandPaletteOpen && this.commandPalette) {
                 if (!this.commandPalette.contains(e.target)) {
@@ -1084,9 +1238,9 @@ class UIController {
             newBtn.style.background = "rgba(59, 130, 246, 0.2)";
         });
         newBtn.addEventListener("click", async () => {
-            const name = window.prompt("New project name:", "New Project");
-            if (name !== null) {
-                await this.store.createProject(name, this.camera);
+            const name = await this.customPrompt("New project name:", "New Project", "Create Project", "Create");
+            if (name && name.trim()) {
+                await this.store.createProject(name.trim(), this.camera);
                 this.closeProjectMenu();
             }
         });
@@ -1159,9 +1313,9 @@ class UIController {
             renameBtn.addEventListener("mouseleave", () => renameBtn.style.opacity = "0.7");
             renameBtn.addEventListener("click", async (e) => {
                 e.stopPropagation();
-                const newName = window.prompt("Rename project:", proj.name);
-                if (newName !== null) {
-                    await this.store.renameProject(proj.id, newName);
+                const newName = await this.customPrompt("Rename project:", proj.name, "Rename Project", "Save");
+                if (newName && newName.trim()) {
+                    await this.store.renameProject(proj.id, newName.trim());
                     this.renderProjectMenuContent();
                 }
             });
@@ -1190,12 +1344,18 @@ class UIController {
             delBtn.addEventListener("mouseleave", () => delBtn.style.opacity = "0.7");
             delBtn.addEventListener("click", async (e) => {
                 e.stopPropagation();
-                const confirmed = window.confirm(`Delete project "${proj.name}"? This cannot be undone.`);
+                const confirmed = await this.customConfirm(
+                    `Delete project "${proj.name}"? This cannot be undone.`,
+                    "Delete Project",
+                    true,
+                    "Delete"
+                );
                 if (confirmed) {
                     await this.store.deleteProject(proj.id, this.camera);
                     this.renderProjectMenuContent();
                 }
             });
+
             actions.appendChild(delBtn);
 
             item.appendChild(actions);
@@ -2385,15 +2545,16 @@ class UIController {
                     justify-content: space-between;
                 `;
                 row.innerHTML = `<span><strong>${item.node.label}</strong> <span style="color:#64748b">(${item.ns})</span></span><span style="color:#38bdf8">+ Connect</span>`;
-                row.addEventListener("click", () => {
-                    const actionLabel = window.prompt(`Action from "${node.label}" to "${item.node.label}":`, "action");
-                    if (actionLabel) {
-                        this.store.addRelationship(node.id, item.node.id, actionLabel);
+                row.addEventListener("click", async () => {
+                    const actionLabel = await this.customPrompt(`Action from "${node.label}" to "${item.node.label}":`, "action", "Create Action", "Connect");
+                    if (actionLabel && actionLabel.trim()) {
+                        this.store.addRelationship(node.id, item.node.id, actionLabel.trim());
                         searchInput.value = "";
                         updateResults();
                         this.renderInspectorContent();
                     }
                 });
+
                 resultsContainer.appendChild(row);
             }
         };
@@ -2429,21 +2590,30 @@ class UIController {
         if (!this.settingsDrawer) return;
         this.settingsDrawer.innerHTML = "";
 
-        // Header
+        // Header with Title, Search Bar, and Close button
         const header = document.createElement("div");
         header.style.cssText = `
-            padding: 16px;
+            padding: 12px 16px;
             border-bottom: 1px solid rgba(51, 65, 85, 0.7);
             display: flex;
-            align-items: center;
-            justify-content: space-between;
+            flex-direction: column;
+            gap: 10px;
+            background: rgba(15, 23, 42, 0.98);
+            position: sticky;
+            top: 0;
+            z-index: 5;
         `;
+
+        const topRow = document.createElement("div");
+        topRow.style.cssText = "display: flex; align-items: center; justify-content: space-between;";
+
         const title = document.createElement("h2");
         title.textContent = "Settings";
         title.style.cssText = "margin: 0; font-size: 16px; font-weight: 600; color: #f8fafc;";
 
         const closeBtn = document.createElement("button");
         closeBtn.innerHTML = "✕";
+        closeBtn.title = "Close Settings (Esc)";
         closeBtn.style.cssText = `
             background: transparent;
             border: none;
@@ -2454,28 +2624,133 @@ class UIController {
         `;
         closeBtn.addEventListener("click", () => this.closeSettings());
 
-        header.appendChild(title);
-        header.appendChild(closeBtn);
+        topRow.appendChild(title);
+        topRow.appendChild(closeBtn);
+        header.appendChild(topRow);
+
+        // Search Filter Input
+        const searchInput = document.createElement("input");
+        searchInput.type = "text";
+        searchInput.placeholder = "Search settings, shortcuts, types...";
+        searchInput.value = this.settingsSearchQuery || "";
+        searchInput.style.cssText = `
+            width: 100%;
+            box-sizing: border-box;
+            background: rgba(30, 41, 59, 0.85);
+            border: 1px solid rgba(51, 65, 85, 0.9);
+            border-radius: 6px;
+            color: #f1f5f9;
+            font-size: 12px;
+            padding: 7px 10px;
+            outline: none;
+            transition: all 0.15s ease;
+        `;
+        searchInput.addEventListener("focus", () => {
+            searchInput.style.borderColor = "#38bdf8";
+            searchInput.style.boxShadow = "0 0 10px rgba(56, 189, 248, 0.25)";
+        });
+        searchInput.addEventListener("blur", () => {
+            searchInput.style.borderColor = "rgba(51, 65, 85, 0.9)";
+            searchInput.style.boxShadow = "none";
+        });
+        searchInput.addEventListener("input", () => {
+            this.settingsSearchQuery = searchInput.value;
+            this.filterSettingsSections();
+        });
+
+        header.appendChild(searchInput);
         this.settingsDrawer.appendChild(header);
 
         // Body Content
         const body = document.createElement("div");
+        body.id = "settings-body-container";
         body.style.cssText = "padding: 16px; display: flex; flex-direction: column; gap: 24px;";
 
-        // 1. Inspector Behavior Preferences
-        body.appendChild(this.createPreferencesPanel());
+        // 1. Preferences Section
+        const prefPanel = this.createPreferencesPanel();
+        prefPanel.setAttribute("data-settings-section", "preferences");
+        body.appendChild(prefPanel);
 
         // 2. Keybindings Section
-        body.appendChild(this.createKeybindingsPanel());
+        const keyPanel = this.createKeybindingsPanel();
+        keyPanel.setAttribute("data-settings-section", "keybindings");
+        body.appendChild(keyPanel);
 
         // 3. Custom Scalar Types Section
-        body.appendChild(this.createScalarTypesPanel());
+        const typesPanel = this.createScalarTypesPanel();
+        typesPanel.setAttribute("data-settings-section", "types");
+        body.appendChild(typesPanel);
 
-        // 4. Storage / Reset Section
-        body.appendChild(this.createStoragePanel());
+        // 4. Import / Export Data Section
+        const ioPanel = this.createImportExportPanel();
+        ioPanel.setAttribute("data-settings-section", "importexport");
+        body.appendChild(ioPanel);
+
+        // 5. Storage / Reset Section
+        const storagePanel = this.createStoragePanel();
+        storagePanel.setAttribute("data-settings-section", "storage");
+        body.appendChild(storagePanel);
 
         this.settingsDrawer.appendChild(body);
+
+        if (this.settingsSearchQuery) {
+            this.filterSettingsSections();
+        }
     }
+
+    /**
+     * Filter settings sections and items according to settingsSearchQuery.
+     */
+    filterSettingsSections() {
+        const query = (this.settingsSearchQuery || "").trim().toLowerCase();
+        if (!this.settingsDrawer) return;
+
+        const body = this.settingsDrawer.querySelector("#settings-body-container");
+        if (!body) return;
+
+        const sections = body.querySelectorAll("[data-settings-section]");
+        let anyVisible = false;
+
+        for (const section of sections) {
+            // For keybindings section, filter individual cards as well
+            if (section.getAttribute("data-settings-section") === "keybindings") {
+                const cards = section.querySelectorAll("[data-action-card]");
+                let matchedCardCount = 0;
+                for (const card of cards) {
+                    const text = (card.textContent || "").toLowerCase();
+                    const match = !query || text.includes(query);
+                    card.style.display = match ? "flex" : "none";
+                    if (match) matchedCardCount++;
+                }
+                const sectionText = (section.querySelector("h3")?.textContent || "").toLowerCase();
+                const sectionMatches = !query || sectionText.includes(query) || matchedCardCount > 0;
+                section.style.display = sectionMatches ? "block" : "none";
+                if (sectionMatches) anyVisible = true;
+            } else {
+                // For other sections, search their full text content
+                const text = (section.textContent || "").toLowerCase();
+                const match = !query || text.includes(query);
+                section.style.display = match ? "block" : "none";
+                if (match) anyVisible = true;
+            }
+        }
+
+        // Empty state message
+        let emptyMsg = body.querySelector("#settings-search-empty");
+        if (!anyVisible && query) {
+            if (!emptyMsg) {
+                emptyMsg = document.createElement("div");
+                emptyMsg.id = "settings-search-empty";
+                emptyMsg.style.cssText = "text-align: center; color: #64748b; font-size: 13px; padding: 30px 10px;";
+                body.appendChild(emptyMsg);
+            }
+            emptyMsg.innerHTML = `No settings found matching <strong style="color: #94a3b8;">"${query}"</strong>`;
+            emptyMsg.style.display = "block";
+        } else if (emptyMsg) {
+            emptyMsg.style.display = "none";
+        }
+    }
+
 
     createPreferencesPanel() {
         const panel = document.createElement("div");
@@ -2670,6 +2945,7 @@ class UIController {
         const actions = this.actionRegistry.getAllActions();
         for (const action of actions) {
             const card = document.createElement("div");
+            card.setAttribute("data-action-card", action.id);
             card.style.cssText = `
                 display: flex;
                 flex-direction: column;
@@ -2684,10 +2960,12 @@ class UIController {
             const cardHead = document.createElement("div");
             const actionName = document.createElement("div");
             actionName.textContent = action.title;
-            actionName.style.cssText = "font-size: 13px; font-weight: 600; color: #f1f5f9;";
+            actionName.title = action.description || action.title;
+            actionName.style.cssText = "font-size: 13px; font-weight: 600; color: #f1f5f9; cursor: help;";
 
             const actionDesc = document.createElement("div");
             actionDesc.textContent = action.description || "";
+            actionDesc.title = action.description || "";
             actionDesc.style.cssText = "font-size: 11px; color: #64748b; margin-top: 2px;";
 
             cardHead.appendChild(actionName);
@@ -3102,7 +3380,310 @@ class UIController {
         return panel;
     }
 
+    createImportExportPanel() {
+        const panel = document.createElement("div");
+
+        const title = document.createElement("h3");
+        title.textContent = "Import & Export";
+        title.style.cssText = "margin: 0 0 6px 0; font-size: 14px; font-weight: 600; color: #38bdf8;";
+        panel.appendChild(title);
+
+        const desc = document.createElement("p");
+        desc.textContent = "Backup, share, or import project documents via JSON file or token-lean outline text:";
+        desc.style.cssText = "margin: 0 0 10px 0; font-size: 12px; color: #94a3b8;";
+        panel.appendChild(desc);
+
+        const grid = document.createElement("div");
+        grid.style.cssText = "display: grid; grid-template-columns: 1fr 1fr; gap: 8px;";
+
+        const btnStyle = `
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            border-radius: 6px;
+            color: #cbd5e1;
+            font-size: 12px;
+            font-weight: 500;
+            padding: 8px 10px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        `;
+
+        // 1. Export JSON button
+        const exportJsonBtn = document.createElement("button");
+        exportJsonBtn.innerHTML = "💾 Export JSON";
+        exportJsonBtn.title = "Download full project document as a .json file";
+        exportJsonBtn.style.cssText = btnStyle;
+        exportJsonBtn.addEventListener("mouseenter", () => exportJsonBtn.style.background = "rgba(56, 189, 248, 0.15)");
+        exportJsonBtn.addEventListener("mouseleave", () => exportJsonBtn.style.background = "rgba(30, 41, 59, 0.8)");
+        exportJsonBtn.addEventListener("click", () => this.downloadJsonFile());
+        grid.appendChild(exportJsonBtn);
+
+        // 2. Import JSON button
+        const importJsonBtn = document.createElement("button");
+        importJsonBtn.innerHTML = "📂 Import JSON";
+        importJsonBtn.title = "Load project document from a .json file";
+        importJsonBtn.style.cssText = btnStyle;
+        importJsonBtn.addEventListener("mouseenter", () => importJsonBtn.style.background = "rgba(56, 189, 248, 0.15)");
+        importJsonBtn.addEventListener("mouseleave", () => importJsonBtn.style.background = "rgba(30, 41, 59, 0.8)");
+        importJsonBtn.addEventListener("click", () => this.triggerJsonFileInput());
+        grid.appendChild(importJsonBtn);
+
+        // 3. Export Outline button
+        const exportOutlineBtn = document.createElement("button");
+        exportOutlineBtn.innerHTML = "📋 Export Outline";
+        exportOutlineBtn.title = "View or copy tab-indented hierarchical outline";
+        exportOutlineBtn.style.cssText = btnStyle;
+        exportOutlineBtn.addEventListener("mouseenter", () => exportOutlineBtn.style.background = "rgba(168, 85, 247, 0.15)");
+        exportOutlineBtn.addEventListener("mouseleave", () => exportOutlineBtn.style.background = "rgba(30, 41, 59, 0.8)");
+        exportOutlineBtn.addEventListener("click", () => this.openImportExportModal("export"));
+        grid.appendChild(exportOutlineBtn);
+
+        // 4. Import Outline button
+        const importOutlineBtn = document.createElement("button");
+        importOutlineBtn.innerHTML = "📝 Import Outline";
+        importOutlineBtn.title = "Import/paste tab-indented hierarchical outline";
+        importOutlineBtn.style.cssText = btnStyle;
+        importOutlineBtn.addEventListener("mouseenter", () => importOutlineBtn.style.background = "rgba(168, 85, 247, 0.15)");
+        importOutlineBtn.addEventListener("mouseleave", () => importOutlineBtn.style.background = "rgba(30, 41, 59, 0.8)");
+        importOutlineBtn.addEventListener("click", () => this.openImportExportModal("import"));
+        grid.appendChild(importOutlineBtn);
+
+        panel.appendChild(grid);
+        return panel;
+    }
+
+    /**
+     * Download the active project document as a .json file.
+     */
+    downloadJsonFile() {
+        const jsonStr = this.store.exportJson();
+        const safeName = (this.store.projectName || "project").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+        const blob = new Blob([jsonStr], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${safeName}.bubbles.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    /**
+     * Open native file picker to import a .json document into active project.
+     */
+    triggerJsonFileInput() {
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = ".json,application/json";
+        fileInput.style.display = "none";
+        fileInput.addEventListener("change", (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async (evt) => {
+                try {
+                    const content = evt.target.result;
+                    this.store.importJson(content);
+                    if (this.camera) {
+                        this.camera.fitToNodes(this.store.getVisibleNodes());
+                    }
+                    await this.customAlert("Project document imported successfully!", "Import Complete");
+                } catch (err) {
+                    await this.customAlert("Failed to parse JSON file: " + err.message, "Import Error");
+                }
+            };
+            reader.readAsText(file);
+        });
+        document.body.appendChild(fileInput);
+        fileInput.click();
+        document.body.removeChild(fileInput);
+    }
+
+    /**
+     * Open interactive Outline Import/Export modal.
+     * @param {"export"|"import"} mode
+     */
+    openImportExportModal(mode = "export") {
+        if (!this.importExportModal) return;
+        this.isImportExportModalOpen = true;
+        this.pushOverlay("importExport");
+        this.importExportModal.style.display = "flex";
+        this.importExportModal.innerHTML = "";
+
+        // Modal Header
+        const header = document.createElement("div");
+        header.style.cssText = "display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(51, 65, 85, 0.8); padding-bottom: 8px;";
+
+        const title = document.createElement("h3");
+        title.textContent = mode === "export" ? "📋 Export Project Outline" : "📝 Import Project Outline";
+        title.style.cssText = "margin: 0; font-size: 15px; font-weight: 600; color: #f1f5f9;";
+        header.appendChild(title);
+
+        const closeBtn = document.createElement("button");
+        closeBtn.innerHTML = "✕";
+        closeBtn.style.cssText = "background: transparent; border: none; color: #94a3b8; font-size: 16px; cursor: pointer; padding: 2px 6px;";
+        closeBtn.addEventListener("click", () => this.closeImportExportModal());
+        header.appendChild(closeBtn);
+        this.importExportModal.appendChild(header);
+
+        // Description
+        const desc = document.createElement("p");
+        desc.style.cssText = "margin: 0; font-size: 12px; color: #94a3b8; line-height: 1.4;";
+        desc.textContent = mode === "export"
+            ? "Token-lean tab-indented hierarchy of all bubbles, custom properties, and directional connections. Copy or save to use with LLMs or notes."
+            : "Paste a tab-indented outline text below. Existing nodes in this project will be replaced with the parsed hierarchy.";
+        this.importExportModal.appendChild(desc);
+
+        // Textarea
+        const textarea = document.createElement("textarea");
+        textarea.style.cssText = `
+            flex: 1;
+            min-height: 240px;
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid rgba(51, 65, 85, 0.9);
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            padding: 10px;
+            resize: vertical;
+            outline: none;
+            tab-size: 4;
+        `;
+        if (mode === "export") {
+            textarea.value = this.store.exportOutline();
+            textarea.readOnly = true;
+        } else {
+            textarea.placeholder = "Postal Service\n\t_properties\n\t\thq: text\n\tPost Office\n\tMail Truck\n\t\t_rels\n\t\t\tCustomer Location: delivery\n\tCustomer Location\n\t\t^sub detail node";
+        }
+        this.importExportModal.appendChild(textarea);
+
+        // Footer Actions
+        const footer = document.createElement("div");
+        footer.style.cssText = "display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 4px;";
+
+        if (mode === "export") {
+            const copyBtn = document.createElement("button");
+            copyBtn.textContent = "📋 Copy to Clipboard";
+            copyBtn.style.cssText = `
+                background: rgba(56, 189, 248, 0.2);
+                border: 1px solid rgba(56, 189, 248, 0.5);
+                color: #38bdf8;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 600;
+                cursor: pointer;
+            `;
+            copyBtn.addEventListener("click", async () => {
+                try {
+                    await navigator.clipboard.writeText(textarea.value);
+                    copyBtn.textContent = "✓ Copied!";
+                    setTimeout(() => { copyBtn.textContent = "📋 Copy to Clipboard"; }, 1500);
+                } catch {
+                    textarea.select();
+                    document.execCommand("copy");
+                    copyBtn.textContent = "✓ Copied!";
+                    setTimeout(() => { copyBtn.textContent = "📋 Copy to Clipboard"; }, 1500);
+                }
+            });
+            footer.appendChild(copyBtn);
+
+            const downloadOutlineBtn = document.createElement("button");
+            downloadOutlineBtn.textContent = "💾 Download .txt";
+            downloadOutlineBtn.style.cssText = `
+                background: rgba(30, 41, 59, 0.8);
+                border: 1px solid rgba(51, 65, 85, 0.8);
+                color: #cbd5e1;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 500;
+                cursor: pointer;
+            `;
+            downloadOutlineBtn.addEventListener("click", () => {
+                const safeName = (this.store.projectName || "project").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+                const blob = new Blob([textarea.value], { type: "text/plain" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `${safeName}-outline.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+            footer.appendChild(downloadOutlineBtn);
+        } else {
+            const applyBtn = document.createElement("button");
+            applyBtn.textContent = "Import & Replace Active Project";
+            applyBtn.style.cssText = `
+                background: rgba(168, 85, 247, 0.25);
+                border: 1px solid rgba(168, 85, 247, 0.6);
+                color: #c084fc;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 600;
+                cursor: pointer;
+            `;
+            applyBtn.addEventListener("click", async () => {
+                if (!textarea.value.trim()) {
+                    await this.customAlert("Please enter outline text first.", "Import Outline");
+                    return;
+                }
+                const confirmed = await this.customConfirm(
+                    "Replace current project contents with this outline?",
+                    "Confirm Import",
+                    true,
+                    "Replace & Import"
+                );
+                if (confirmed) {
+                    this.store.importOutline(textarea.value);
+                    if (this.camera) {
+                        this.camera.fitToNodes(this.store.getVisibleNodes());
+                    }
+                    this.closeImportExportModal();
+                }
+            });
+            footer.appendChild(applyBtn);
+        }
+
+        const cancelBtn = document.createElement("button");
+        cancelBtn.textContent = "Close";
+        cancelBtn.style.cssText = `
+            background: transparent;
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            color: #94a3b8;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
+            cursor: pointer;
+        `;
+        cancelBtn.addEventListener("click", () => this.closeImportExportModal());
+        footer.appendChild(cancelBtn);
+
+        this.importExportModal.appendChild(footer);
+        setTimeout(() => textarea.focus(), 30);
+    }
+
+    /** Close interactive Outline Import/Export modal */
+    closeImportExportModal() {
+        this.isImportExportModalOpen = false;
+        this.removeOverlay("importExport");
+        if (this.importExportModal) {
+            this.importExportModal.style.display = "none";
+        }
+    }
+
     createStoragePanel() {
+
         const panel = document.createElement("div");
         panel.style.cssText = "border: 1px solid rgba(225, 29, 72, 0.4); border-radius: 6px; padding: 12px; background: rgba(225, 29, 72, 0.05);";
 
@@ -3136,8 +3717,11 @@ class UIController {
             resetBtn.style.background = "rgba(225, 29, 72, 0.2)";
         });
         resetBtn.addEventListener("click", async () => {
-            const confirmed = window.confirm(
-                "DANGER: Factory Reset will permanently delete ALL projects, all bubbles, all custom keybindings, and all local storage.\n\nAre you sure you want to proceed?"
+            const confirmed = await this.customConfirm(
+                "DANGER: Factory Reset will permanently delete ALL projects, all bubbles, all custom keybindings, and all local storage.\n\nAre you sure you want to proceed?",
+                "Factory Reset",
+                true,
+                "Reset Everything"
             );
             if (confirmed) {
                 if (this.store && this.store.db) {
@@ -3146,6 +3730,7 @@ class UIController {
                 location.reload();
             }
         });
+
 
         panel.appendChild(resetBtn);
         return panel;
@@ -3160,4 +3745,283 @@ class UIController {
         }
         return trail.join(".");
     }
+
+    // --- Quick Guide Modal ---
+
+    toggleGuideModal() {
+        if (this.isGuideModalOpen) {
+            this.closeGuideModal();
+        } else {
+            this.openGuideModal();
+        }
+    }
+
+    openGuideModal() {
+        if (!this.guideModal) return;
+        this.isGuideModalOpen = true;
+        this.pushOverlay("guide");
+        this.guideModal.style.display = "flex";
+        this.renderGuideModal();
+    }
+
+    closeGuideModal() {
+        this.isGuideModalOpen = false;
+        this.removeOverlay("guide");
+        if (this.guideModal) {
+            this.guideModal.style.display = "none";
+        }
+    }
+
+    renderGuideModal() {
+        if (!this.guideModal) return;
+        this.guideModal.innerHTML = "";
+
+        // Header
+        const header = document.createElement("div");
+        header.style.cssText = "display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(51, 65, 85, 0.8); padding-bottom: 10px;";
+
+        const title = document.createElement("h2");
+        title.innerHTML = "❓ Quick Guide & Fundamentals";
+        title.style.cssText = "margin: 0; font-size: 16px; font-weight: 700; color: #f8fafc;";
+
+        const closeBtn = document.createElement("button");
+        closeBtn.innerHTML = "✕";
+        closeBtn.title = "Close Guide (Esc)";
+        closeBtn.style.cssText = "background: transparent; border: none; color: #94a3b8; font-size: 16px; cursor: pointer; padding: 4px 8px;";
+        closeBtn.addEventListener("click", () => this.closeGuideModal());
+
+        header.appendChild(title);
+        header.appendChild(closeBtn);
+        this.guideModal.appendChild(header);
+
+        // Content
+        const content = document.createElement("div");
+        content.style.cssText = "display: flex; flex-direction: column; gap: 16px; font-size: 13px; color: #cbd5e1; line-height: 1.5;";
+
+        // Section 1: Core Concepts
+        const sec1 = document.createElement("div");
+        sec1.innerHTML = `
+            <h3 style="margin: 0 0 6px 0; font-size: 14px; font-weight: 600; color: #38bdf8;">1. Hierarchical Bubbles</h3>
+            <p style="margin: 0 0 8px 0; color: #94a3b8;">
+                Bubbles represent entities or sub-systems. Any bubble can contain its own isolated layer of child bubbles.
+            </p>
+            <div style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(51, 65, 85, 0.6); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 6px;">
+                <div>• <strong style="color: #f1f5f9;">Create Bubble:</strong> Double-click empty canvas</div>
+                <div>• <strong style="color: #f1f5f9;">Enter Sub-Layer:</strong> Double-click any bubble node</div>
+                <div>• <strong style="color: #f1f5f9;">Leave Sub-Layer:</strong> Press <kbd style="background: #1e293b; padding: 1px 5px; border-radius: 4px; border: 1px solid #475569;">Esc</kbd> or click breadcrumbs up top</div>
+                <div>• <strong style="color: #f1f5f9;">Jump Directly:</strong> Click <strong style="color: #38bdf8;">🔍 Jump</strong> to search and jump to any layer instantly</div>
+            </div>
+        `;
+        content.appendChild(sec1);
+
+        // Section 2: Directional Actions / Connections
+        const sec2 = document.createElement("div");
+        sec2.innerHTML = `
+            <h3 style="margin: 0 0 6px 0; font-size: 14px; font-weight: 600; color: #38bdf8;">2. Directional Connections</h3>
+            <p style="margin: 0 0 8px 0; color: #94a3b8;">
+                Hover over any bubble to reveal its floating handles on the right edge:
+            </p>
+            <div style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(51, 65, 85, 0.6); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 6px;">
+                <div>• <strong style="color: #f1f5f9;">Drag ⚡ handle:</strong> Drag from one bubble to another to establish a directional relationship</div>
+                <div>• <strong style="color: #f1f5f9;">Click {} handle:</strong> Opens property quick-filter card for that bubble</div>
+                <div>• <strong style="color: #f1f5f9;">Hold Shift:</strong> Snaps dragged bubbles to the grid interval</div>
+            </div>
+        `;
+        content.appendChild(sec2);
+
+        // Section 3: Navigation & Palettes
+        const sec3 = document.createElement("div");
+        sec3.innerHTML = `
+            <h3 style="margin: 0 0 6px 0; font-size: 14px; font-weight: 600; color: #38bdf8;">3. Productivity Tools</h3>
+            <div style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(51, 65, 85, 0.6); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 6px;">
+                <div>• <strong style="color: #f1f5f9;">⚡ Actions Palette:</strong> Search and run all editor commands instantly</div>
+                <div>• <strong style="color: #f1f5f9;">⚙️ Settings:</strong> Custom keybindings, custom data types, grid snapping, and data import/export</div>
+                <div>• <strong style="color: #f1f5f9;">📁 Projects Dropdown:</strong> Switch, create, duplicate, rename, or delete projects</div>
+            </div>
+        `;
+        content.appendChild(sec3);
+
+        // Footer notice
+        const notice = document.createElement("div");
+        notice.style.cssText = "background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; padding: 10px; font-size: 12px; color: #6ee7b7;";
+        notice.innerHTML = `💡 <em>Tip:</em> To browse or rebind all keyboard shortcuts, open the <strong style="color: #f1f5f9; cursor: pointer; text-decoration: underline;" id="guide-open-settings">Settings Drawer</strong>.`;
+        content.appendChild(notice);
+
+        const openSettingsLink = notice.querySelector("#guide-open-settings");
+        if (openSettingsLink) {
+            openSettingsLink.addEventListener("click", () => {
+                this.closeGuideModal();
+                this.openSettings();
+            });
+        }
+
+        this.guideModal.appendChild(content);
+    }
+
+    // --- Custom Alert / Confirm / Prompt Dialog ---
+
+    /**
+     * Show custom modal dialog with styled UI.
+     * @param {Object} options
+     * @param {string} options.title - Dialog title
+     * @param {string} options.message - Body text / question
+     * @param {"alert"|"confirm"|"prompt"} options.type - Dialog type
+     * @param {string} [options.defaultValue] - Default text for prompt
+     * @param {string} [options.confirmText] - Label for confirm button
+     * @param {string} [options.cancelText] - Label for cancel button
+     * @param {boolean} [options.isDanger] - Danger styling for confirm button
+     * @returns {Promise<any>}
+     */
+    openDialog(options) {
+        return new Promise((resolve) => {
+            if (!this.dialogModal) return resolve(null);
+
+            const {
+                title = "Notice",
+                message = "",
+                type = "alert",
+                defaultValue = "",
+                confirmText = "OK",
+                cancelText = "Cancel",
+                isDanger = false
+            } = options;
+
+            this.isDialogOpen = true;
+            this.pushOverlay("dialog");
+            this.dialogModal.style.display = "flex";
+            this.dialogModal.innerHTML = "";
+
+            // Header
+            const head = document.createElement("div");
+            head.style.cssText = "display: flex; align-items: center; justify-content: space-between;";
+
+            const titleEl = document.createElement("h3");
+            titleEl.textContent = title;
+            titleEl.style.cssText = `margin: 0; font-size: 15px; font-weight: 600; color: ${isDanger ? "#fb7185" : "#f1f5f9"};`;
+            head.appendChild(titleEl);
+
+            const closeX = document.createElement("button");
+            closeX.innerHTML = "✕";
+            closeX.style.cssText = "background: transparent; border: none; color: #94a3b8; font-size: 14px; cursor: pointer;";
+            closeX.addEventListener("click", () => {
+                this.closeDialog(type === "confirm" ? false : null);
+                resolve(type === "confirm" ? false : null);
+            });
+            head.appendChild(closeX);
+            this.dialogModal.appendChild(head);
+
+            // Message Body
+            const msgEl = document.createElement("div");
+            msgEl.textContent = message;
+            msgEl.style.cssText = "font-size: 13px; color: #cbd5e1; line-height: 1.5; white-space: pre-wrap;";
+            this.dialogModal.appendChild(msgEl);
+
+            // Prompt Input (if prompt type)
+            let promptInput = null;
+            if (type === "prompt") {
+                promptInput = document.createElement("input");
+                promptInput.type = "text";
+                promptInput.value = defaultValue || "";
+                promptInput.style.cssText = `
+                    width: 100%;
+                    box-sizing: border-box;
+                    background: rgba(30, 41, 59, 0.9);
+                    border: 1px solid rgba(56, 189, 248, 0.6);
+                    border-radius: 6px;
+                    color: #f1f5f9;
+                    font-size: 13px;
+                    padding: 8px 10px;
+                    outline: none;
+                `;
+                promptInput.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") {
+                        e.preventDefault();
+                        const val = promptInput.value;
+                        this.closeDialog(val);
+                        resolve(val);
+                    } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        this.closeDialog(null);
+                        resolve(null);
+                    }
+                });
+                this.dialogModal.appendChild(promptInput);
+            }
+
+            // Buttons Row
+            const btnRow = document.createElement("div");
+            btnRow.style.cssText = "display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;";
+
+            if (type !== "alert") {
+                const cancelBtn = document.createElement("button");
+                cancelBtn.textContent = cancelText;
+                cancelBtn.style.cssText = `
+                    background: transparent;
+                    border: 1px solid rgba(51, 65, 85, 0.9);
+                    color: #94a3b8;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                    font-size: 12px;
+                    cursor: pointer;
+                `;
+                cancelBtn.addEventListener("click", () => {
+                    this.closeDialog(type === "confirm" ? false : null);
+                    resolve(type === "confirm" ? false : null);
+                });
+                btnRow.appendChild(cancelBtn);
+            }
+
+            const confirmBtn = document.createElement("button");
+            confirmBtn.textContent = confirmText;
+            confirmBtn.style.cssText = `
+                background: ${isDanger ? "rgba(225, 29, 72, 0.25)" : "rgba(56, 189, 248, 0.25)"};
+                border: 1px solid ${isDanger ? "rgba(225, 29, 72, 0.6)" : "rgba(56, 189, 248, 0.6)"};
+                color: ${isDanger ? "#fda4af" : "#38bdf8"};
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 600;
+                cursor: pointer;
+            `;
+            confirmBtn.addEventListener("click", () => {
+                const val = type === "prompt" ? (promptInput ? promptInput.value : "") : true;
+                this.closeDialog(val);
+                resolve(val);
+            });
+            btnRow.appendChild(confirmBtn);
+
+            this.dialogModal.appendChild(btnRow);
+
+            setTimeout(() => {
+                if (promptInput) {
+                    promptInput.focus();
+                    promptInput.select();
+                } else {
+                    confirmBtn.focus();
+                }
+            }, 30);
+        });
+    }
+
+    closeDialog(result = null) {
+        this.isDialogOpen = false;
+        this.removeOverlay("dialog");
+        if (this.dialogModal) {
+            this.dialogModal.style.display = "none";
+        }
+    }
+
+    // Convenient async replacements for window alert/confirm/prompt
+    customAlert(message, title = "Notice") {
+        return this.openDialog({ type: "alert", title, message });
+    }
+
+    customConfirm(message, title = "Confirm", isDanger = false, confirmText = "Confirm") {
+        return this.openDialog({ type: "confirm", title, message, isDanger, confirmText });
+    }
+
+    customPrompt(message, defaultValue = "", title = "Prompt", confirmText = "Submit") {
+        return this.openDialog({ type: "prompt", title, message, defaultValue, confirmText });
+    }
 }
+

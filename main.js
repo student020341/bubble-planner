@@ -72,6 +72,58 @@ actionRegistry.register({
     }
 });
 
+actionRegistry.register({
+    id: "exportJson",
+    title: "Export JSON",
+    description: "Download active project document as a .json file",
+    target: "global",
+    execute: () => {
+        uiController.downloadJsonFile();
+    }
+});
+
+actionRegistry.register({
+    id: "importJson",
+    title: "Import JSON",
+    description: "Upload and load a project document from a .json file",
+    target: "global",
+    execute: () => {
+        uiController.triggerJsonFileInput();
+    }
+});
+
+actionRegistry.register({
+    id: "exportOutline",
+    title: "Export Outline",
+    description: "View, copy, or download tab-indented outline text",
+    target: "global",
+    execute: () => {
+        uiController.openImportExportModal("export");
+    }
+});
+
+actionRegistry.register({
+    id: "importOutline",
+    title: "Import Outline",
+    description: "Paste and parse tab-indented outline into the active project",
+    target: "global",
+    execute: () => {
+        uiController.openImportExportModal("import");
+    }
+});
+
+actionRegistry.register({
+    id: "openGuide",
+    title: "Quick Guide & Help",
+    description: "Open the fundamentals quick guide and overview",
+    target: "global",
+    execute: () => {
+        uiController.toggleGuideModal();
+    }
+});
+
+
+
 
 actionRegistry.register({
     id: "inspectEntity",
@@ -134,11 +186,11 @@ actionRegistry.register({
     title: "Create Bubble",
     description: "Create a new bubble at the current location",
     target: "canvas",
-    execute: (ctx) => {
+    execute: async (ctx) => {
         const pos = ctx.worldPos || { x: camera.x, y: camera.y };
-        const label = window.prompt("New bubble name:", "New Item");
-        if (label) {
-            const node = store.addNode(label, pos.x, pos.y);
+        const label = await uiController.customPrompt("New bubble name:", "New Item", "Create Bubble", "Create");
+        if (label && label.trim()) {
+            const node = store.addNode(label.trim(), pos.x, pos.y);
             canvasView.selectedNode = node;
             canvasView.lastFocusedNode = node;
         }
@@ -151,10 +203,10 @@ actionRegistry.register({
     description: "Rename the currently selected bubble",
     target: "node",
     isEnabled: () => Boolean(canvasView.selectedNode),
-    execute: () => {
+    execute: async () => {
         const node = canvasView.selectedNode;
         if (!node) return;
-        const newLabel = window.prompt("Edit bubble name:", node.label);
+        const newLabel = await uiController.customPrompt("Edit bubble name:", node.label, "Rename Bubble", "Save");
         if (newLabel && newLabel.trim()) {
             store.updateNode(node.id, { label: newLabel.trim() });
         }
@@ -167,9 +219,14 @@ actionRegistry.register({
     description: "Delete the selected bubble or relationship",
     target: "global",
     isEnabled: () => Boolean(canvasView.selectedNode || canvasView.selectedRelationship),
-    execute: () => {
+    execute: async () => {
         if (canvasView.selectedNode) {
-            const confirmed = window.confirm(`Delete "${canvasView.selectedNode.label}" and all its sub-bubbles?`);
+            const confirmed = await uiController.customConfirm(
+                `Delete "${canvasView.selectedNode.label}" and all its sub-bubbles?`,
+                "Delete Bubble",
+                true,
+                "Delete"
+            );
             if (confirmed) {
                 store.removeNode(canvasView.selectedNode.id);
                 canvasView.selectedNode = null;
@@ -181,6 +238,7 @@ actionRegistry.register({
         }
     }
 });
+
 
 // --- Keyboard Event Router ---
 

@@ -359,9 +359,20 @@ class CanvasView {
                 // Treated as a DRAG to connect: test target node
                 const hit = this.hitTest(e.clientX, e.clientY);
                 if (hit.node && this.connectingSourceNode && hit.node.id !== this.connectingSourceNode.id) {
-                    const actionLabel = window.prompt("Action label (e.g. delivery, call, send):", "action");
-                    if (actionLabel) {
-                        this.store.addRelationship(this.connectingSourceNode.id, hit.node.id, actionLabel);
+                    const sourceId = this.connectingSourceNode.id;
+                    const targetId = hit.node.id;
+                    if (window.uiController && window.uiController.customPrompt) {
+                        window.uiController.customPrompt("Action label (e.g. delivery, call, send):", "action", "Create Action")
+                            .then(actionLabel => {
+                                if (actionLabel && actionLabel.trim()) {
+                                    this.store.addRelationship(sourceId, targetId, actionLabel.trim());
+                                }
+                            });
+                    } else {
+                        const actionLabel = window.prompt("Action label (e.g. delivery, call, send):", "action");
+                        if (actionLabel && actionLabel.trim()) {
+                            this.store.addRelationship(sourceId, targetId, actionLabel.trim());
+                        }
                     }
                 }
             }
@@ -951,16 +962,7 @@ class CanvasView {
     }
 
     renderHUD(ctx) {
-        ctx.save();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-        // Help hint on bottom
-        ctx.font = "12px system-ui, sans-serif";
-        ctx.fillStyle = "#64748b";
-        ctx.textAlign = "left";
-        ctx.textBaseline = "middle";
-        ctx.fillText("Double-click: Drill In / Add  |  Drag ⚡: Connect  |  Esc: Back up  |  E: Edit  |  Del: Delete", 20, window.innerHeight - 18);
-
-        ctx.restore();
+        // Can be used for transient canvas-level HUD if needed
     }
 }
+

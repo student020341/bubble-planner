@@ -609,7 +609,7 @@ class ProjectStore {
             // Properties
             const props = Object.entries(node.properties || {});
             if (props.length > 0) {
-                lines.push(`${indent}\tproperties`);
+                lines.push(`${indent}\t_properties`);
                 for (const [k, v] of props) {
                     lines.push(`${indent}\t\t${k}: ${v}`);
                 }
@@ -618,7 +618,7 @@ class ProjectStore {
             // Rels
             const rels = outRels.get(node.id) || [];
             if (rels.length > 0) {
-                lines.push(`${indent}\trels`);
+                lines.push(`${indent}\t_rels`);
                 for (const r of rels) {
                     const target = idToNode.get(r.to);
                     const targetLabel = target ? target.label : `#${r.to}`;
@@ -643,9 +643,174 @@ class ProjectStore {
 
     /**
      * Import/merge project from tab-indented outline text.
+     * Replaces or populates the active document.
      * @param {string} text
      */
     importOutline(text) {
-        // Will implement parser in future step
+        if (!text || !text.trim()) return;
+
+        const rawLines = text.split(/\r?\n/);
+        const nodes = [];
+        const relationships = [];
+        let nextNodeId = 1;
+        let nextRelId = 1;
+        const typesSet = new Set(this.doc.types || ["text", "number"]);
+
+        // Stack to track current ancestor node hierarchy: [{ node, depth }]
+        const stack = [];
+        // Tracks current parsing section for the topmost node: null | "properties" | "rels"
+        let currentSection = null;
+        let sectionDepth = 0;
+
+        // Pending relationships to link by label target after all nodes exist: { fromId, targetLabel, relLabel }
+        const pendingRels = [];
+
+        // Count per-parent layer nodes to arrange x, y positions nicely
+        const layerCounts = new Map();
+
+        const getNodePos = (parentId) => {
+            const count = layerCounts.get(parentId) || 0;
+            layerCounts.set(parentId, count + 1);
+            const cols = 3;
+            const col = count % cols;
+            const row = Math.floor(count / cols);
+            return {
+                x: 200 + col * 220,
+                y: 180 + row * 160
+            };
+        };
+
+        for (let lineIdx = 0; lineIdx < rawLines.length; lineIdx++) {
+            const line = rawLines[lineIdx];
+            if (!line.trim()) continue; // skip empty lines
+
+            // Measure indentation depth (tabs count as 1 depth; 2 or 4 spaces count as 1 depth)
+            const matchIndent = line.match(/^(\t+| +)/);
+            let depth = 0;
+            if (matchIndent) {
+                const lead = matchIndent[0];
+                if (lead.startsWith("\t")) {
+                    depth = lead.length;
+                } else {
+                    depth = Math.floor(lead.length / 2); // standard 2 or 4 spaces
+                }
+            }
+
+            let trimmed = line.trim();
+
+            // Count leading carets (^) that indicate additional indentation level(s)
+            while (trimmed.startsWith("^")) {
+                depth += 1;
+                trimmed = trimmed.slice(1).trim();
+            }
+
+            if (!trimmed) continue;
+
+            const lower = trimmed.toLowerCase();
+
+            // Special metadata blocks must be prefixed with an underscore (e.g. "_properties", "_rels")
+            // This prevents normal bubbles named "properties" or "rels" from colliding with keywords.
+            const isPropsSection = lower === "_properties" || lower === "_properties:";
+            const isRelsSection = lower === "_rels" || lower === "_rels:";
+
+            if (isPropsSection && stack.length > 0) {
+                currentSection = "properties";
+                sectionDepth = depth;
+                continue;
+            }
+            if (isRelsSection && stack.length > 0) {
+                currentSection = "rels";
+                sectionDepth = depth;
+                continue;
+            }
+
+            // Check if this line is an entry inside a section
+            if (currentSection && depth > sectionDepth && stack.length > 0) {
+                const currentNode = stack[stack.length - 1].node;
+                const colonIdx = trimmed.indexOf(":");
+                if (colonIdx !== -1) {
+                    const key = trimmed.slice(0, colonIdx).trim();
+                    const val = trimmed.slice(colonIdx + 1).trim();
+
+                    if (currentSection === "properties") {
+                        if (!currentNode.properties) currentNode.properties = {};
+                        currentNode.properties[key] = val || "text";
+                        if (val && !typesSet.has(val)) {
+                            typesSet.add(val);
+                        }
+                    } else if (currentSection === "rels") {
+                        pendingRels.push({
+                            fromId: currentNode.id,
+                            targetLabel: key,
+                            relLabel: val || "related"
+                        });
+                    }
+                    continue;
+                }
+            }
+
+            // Otherwise, section has ended
+            currentSection = null;
+
+            // Adjust stack to find parent node at depth - 1
+            while (stack.length > 0 && stack[stack.length - 1].depth >= depth) {
+                stack.pop();
+            }
+
+            const parentNode = stack.length > 0 ? stack[stack.length - 1].node : null;
+            const parentId = parentNode ? parentNode.id : null;
+            const pos = getNodePos(parentId);
+
+            const newNode = {
+                id: nextNodeId++,
+                parentId,
+                label: trimmed,
+                description: "",
+                x: pos.x,
+                y: pos.y,
+                properties: {}
+            };
+            nodes.push(newNode);
+            stack.push({ node: newNode, depth });
+        }
+
+        // Link pending relationships by label target
+        const labelToNode = new Map();
+        for (const n of nodes) {
+            // First one wins if duplicates exist
+            if (!labelToNode.has(n.label.toLowerCase())) {
+                labelToNode.set(n.label.toLowerCase(), n);
+            }
+        }
+
+        for (const pr of pendingRels) {
+            let target = labelToNode.get(pr.targetLabel.toLowerCase());
+            // Fallback: check if targetLabel is #<id>
+            if (!target && pr.targetLabel.startsWith("#")) {
+                const targetId = parseInt(pr.targetLabel.slice(1), 10);
+                target = nodes.find(n => n.id === targetId);
+            }
+            if (target) {
+                relationships.push({
+                    id: nextRelId++,
+                    from: pr.fromId,
+                    to: target.id,
+                    label: pr.relLabel,
+                    description: "",
+                    properties: {}
+                });
+            }
+        }
+
+        this.doc = {
+            lastNodeId: nextNodeId - 1,
+            lastRelId: nextRelId - 1,
+            types: Array.from(typesSet),
+            nodes,
+            relationships
+        };
+        this.currentParentId = null;
+        this.notify();
     }
 }
+
