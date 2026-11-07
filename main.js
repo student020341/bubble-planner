@@ -4,12 +4,12 @@ setWorld(0, 0, "fill", false);
 /** @type CanvasRenderingContext2D */
 const ctx = canvasContext2D;
 
-// 1. Initialize Store with mock data
-const store = new ProjectStore();
+// 1. Initialize StorageDB & Store
+const db = new StorageDB();
+const store = new ProjectStore(db);
 
 // 2. Initialize Camera
 const camera = new Camera(canvas);
-camera.fitToNodes(store.getVisibleNodes());
 
 // 3. Initialize Action Registry
 const actionRegistry = new ActionRegistry();
@@ -20,6 +20,11 @@ const canvasView = new CanvasView(canvas, store, camera, actionRegistry);
 // 5. Initialize UI Controller (interactive breadcrumbs, overlays)
 const uiController = new UIController(store, canvasView, camera, actionRegistry);
 window.uiController = uiController;
+
+// Attach camera transform listener for debounced view-state persistence
+camera.onTransformChange = () => {
+    store.debouncedSaveViewState(camera);
+};
 
 // --- Register Core Named Actions ---
 
@@ -197,3 +202,65 @@ const render = (dt, cw, ch) => {
 };
 
 loop([logic, render]);
+
+// --- Boot Persistence ---
+
+async function bootPersistence() {
+    try {
+        await db.init();
+
+        // 1. Load project document
+        const hasLoadedDoc = await store.loadProject();
+        if (!hasLoadedDoc) {
+            // Seed project for the first time
+            await store.saveProject();
+        }
+
+        // 2. Load user settings (preferences, custom keybindings)
+        const savedSettings = await db.get("user_settings");
+        if (savedSettings) {
+            if (savedSettings.bindings) {
+                actionRegistry.bindings = new Map(savedSettings.bindings);
+            }
+            if (savedSettings.autoOpenInspector !== undefined) {
+                uiController.autoOpenInspector = savedSettings.autoOpenInspector;
+            }
+            if (savedSettings.autoCloseInspector !== undefined) {
+                uiController.autoCloseInspector = savedSettings.autoCloseInspector;
+            }
+            if (savedSettings.dragThreshold !== undefined) {
+                canvasView.dragThreshold = savedSettings.dragThreshold;
+            }
+        }
+
+        // 3. Load navigation & camera state
+        const savedViewState = await db.get("view_state_" + store.projectId);
+        let restoredCamera = false;
+        if (savedViewState) {
+            if (savedViewState.currentParentId !== undefined) {
+                const layerExists = savedViewState.currentParentId === null || 
+                                    store.doc.nodes.some(n => n.id === savedViewState.currentParentId);
+                store.currentParentId = layerExists ? savedViewState.currentParentId : null;
+            }
+            if (savedViewState.camera && typeof savedViewState.camera.zoom === "number") {
+                camera.x = savedViewState.camera.x;
+                camera.y = savedViewState.camera.y;
+                camera.zoom = savedViewState.camera.zoom;
+                restoredCamera = true;
+            }
+        }
+
+        if (!restoredCamera) {
+            camera.fitToNodes(store.getVisibleNodes());
+        }
+
+        store.notify();
+    } catch (err) {
+        console.error("StorageDB init error:", err);
+        camera.fitToNodes(store.getVisibleNodes());
+        store.notify();
+    }
+}
+
+bootPersistence();
+

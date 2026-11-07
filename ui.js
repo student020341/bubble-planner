@@ -54,7 +54,15 @@ class UIController {
         /** @type {Array<string>} Active overlay stack in LIFO order */
         this.overlayStack = [];
 
+        /** @type {HTMLElement|null} Top-bar save status indicator */
+        this.saveIndicator = null;
+        /** @type {number|null} */
+        this._savedFadeTimeout = null;
+
         this.mount();
+        if (this.store) {
+            this.store.onSaveStatusChange = (status) => this.updateSaveIndicator(status);
+        }
         this.store.subscribe(() => {
             this.renderBreadcrumbs();
             if (this.activeFilterNode) {
@@ -151,6 +159,59 @@ class UIController {
         return false;
     }
 
+    /**
+     * Persist user preferences and keybindings to IndexedDB.
+     */
+    async saveSettings() {
+        if (!this.store || !this.store.db) return;
+        if (this.store.setSaveStatus) this.store.setSaveStatus("saving");
+        const settings = {
+            bindings: Array.from(this.actionRegistry.bindings.entries()),
+            autoOpenInspector: this.autoOpenInspector,
+            autoCloseInspector: this.autoCloseInspector,
+            dragThreshold: this.canvasView.dragThreshold
+        };
+        await this.store.db.set("user_settings", settings);
+        if (this.store.setSaveStatus) this.store.setSaveStatus("saved");
+    }
+
+    /**
+     * Update top-bar save status indicator badge.
+     * @param {"saving"|"saved"} status
+     */
+    updateSaveIndicator(status) {
+        if (!this.saveIndicator) return;
+        if (this._savedFadeTimeout) clearTimeout(this._savedFadeTimeout);
+
+        if (status === "saving") {
+            this.saveIndicator.style.opacity = "1";
+            this.saveIndicator.style.color = "#fbbf24";
+            this.saveIndicator.style.background = "rgba(251, 191, 36, 0.12)";
+            this.saveIndicator.innerHTML = `
+                <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #fbbf24; box-shadow: 0 0 6px #fbbf24;"></span>
+                <span>Saving...</span>
+            `;
+        } else if (status === "saved") {
+            this.saveIndicator.style.opacity = "1";
+            this.saveIndicator.style.color = "#34d399";
+            this.saveIndicator.style.background = "rgba(16, 185, 129, 0.12)";
+            this.saveIndicator.innerHTML = `
+                <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #10b981; box-shadow: 0 0 6px #10b981;"></span>
+                <span>Saved</span>
+            `;
+
+            this._savedFadeTimeout = setTimeout(() => {
+                if (this.saveIndicator) {
+                    this.saveIndicator.style.opacity = "0.45";
+                    this.saveIndicator.style.color = "#94a3b8";
+                    this.saveIndicator.style.background = "transparent";
+                    const dot = this.saveIndicator.querySelector("span");
+                    if (dot) dot.style.boxShadow = "none";
+                }
+            }, 1200);
+        }
+    }
+
     /** Mount DOM overlay elements for top bar, breadcrumbs, and drawer containers */
     mount() {
         // Top navigation bar
@@ -213,6 +274,28 @@ class UIController {
         // Right side top-bar actions
         const rightBar = document.createElement("div");
         rightBar.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+        // Save Status Indicator Badge
+        this.saveIndicator = document.createElement("div");
+        this.saveIndicator.id = "save-indicator";
+        this.saveIndicator.style.cssText = `
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 11px;
+            font-weight: 500;
+            color: #94a3b8;
+            opacity: 0.45;
+            padding: 3px 8px;
+            border-radius: 4px;
+            transition: all 0.25s ease;
+            user-select: none;
+        `;
+        this.saveIndicator.innerHTML = `
+            <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #10b981;"></span>
+            <span>Saved</span>
+        `;
+        rightBar.appendChild(this.saveIndicator);
 
         const inspectBtn = document.createElement("button");
         inspectBtn.innerHTML = "📝 Inspect (I)";
@@ -1452,6 +1535,7 @@ class UIController {
         cb1.style.cursor = "pointer";
         cb1.addEventListener("change", () => {
             this.autoOpenInspector = cb1.checked;
+            this.saveSettings();
         });
         row1.appendChild(cb1);
         const span1 = document.createElement("span");
@@ -1468,6 +1552,7 @@ class UIController {
         cb2.style.cursor = "pointer";
         cb2.addEventListener("change", () => {
             this.autoCloseInspector = cb2.checked;
+            this.saveSettings();
         });
         row2.appendChild(cb2);
         const span2 = document.createElement("span");
@@ -1499,6 +1584,9 @@ class UIController {
         slider.addEventListener("input", () => {
             this.canvasView.dragThreshold = parseInt(slider.value, 10);
             row3Val.textContent = `${this.canvasView.dragThreshold}px`;
+        });
+        slider.addEventListener("change", () => {
+            this.saveSettings();
         });
         row3.appendChild(slider);
         list.appendChild(row3);
@@ -1541,6 +1629,7 @@ class UIController {
         });
         restoreBtn.addEventListener("click", () => {
             this.actionRegistry.restoreDefaults();
+            this.saveSettings();
             this.renderSettingsContent();
         });
         headerRow.appendChild(restoreBtn);
@@ -1642,6 +1731,7 @@ class UIController {
                 delBtn.addEventListener("mouseleave", () => delBtn.style.color = "#94a3b8");
                 delBtn.addEventListener("click", () => {
                     this.actionRegistry.unbind(trigger);
+                    this.saveSettings();
                     this.renderSettingsContent();
                 });
                 row.appendChild(delBtn);
@@ -1682,6 +1772,7 @@ class UIController {
 
                     const newTrigger = e.code.startsWith("Key") ? e.code : e.key;
                     this.actionRegistry.bind(newTrigger, action.id);
+                    this.saveSettings();
                     this.recordingActionId = null;
                     this.renderSettingsContent();
                 };
@@ -1725,6 +1816,7 @@ class UIController {
                 gestureSelect.addEventListener("change", () => {
                     if (gestureSelect.value) {
                         this.actionRegistry.bind(gestureSelect.value, action.id);
+                        this.saveSettings();
                         this.renderSettingsContent();
                     }
                 });
@@ -1885,8 +1977,11 @@ class UIController {
         resetBtn.addEventListener("mouseleave", () => {
             resetBtn.style.background = "rgba(225, 29, 72, 0.15)";
         });
-        resetBtn.addEventListener("click", () => {
-            if (window.confirm("Reset all bubbles and actions back to initial mock project?")) {
+        resetBtn.addEventListener("click", async () => {
+            if (window.confirm("Reset all bubbles, connections, settings, and view state back to default?")) {
+                if (this.store && this.store.db) {
+                    await this.store.db.clear();
+                }
                 location.reload();
             }
         });

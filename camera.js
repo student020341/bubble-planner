@@ -17,6 +17,9 @@ class Camera {
         /** Virtual bounding box around all current content */
         this.bounds = { minX: -2000, minY: -2000, maxX: 2000, maxY: 2000 };
         this.padding = 400;
+
+        /** @type {(() => void)|null} Change callback */
+        this.onTransformChange = null;
     }
 
     /**
@@ -56,6 +59,7 @@ class Camera {
     pan(dx, dy) {
         this.x -= dx / this.zoom;
         this.y -= dy / this.zoom;
+        if (this.onTransformChange) this.onTransformChange();
     }
 
     /**
@@ -76,6 +80,7 @@ class Camera {
 
         this.x += (worldFocal.x - newWorldFocal.x);
         this.y += (worldFocal.y - newWorldFocal.y);
+        if (this.onTransformChange) this.onTransformChange();
     }
 
     /**
@@ -106,6 +111,7 @@ class Camera {
             this.x = 400;
             this.y = 300;
             this.zoom = 1;
+            if (this.onTransformChange) this.onTransformChange();
             return;
         }
 
@@ -118,6 +124,7 @@ class Camera {
         this.x = sumX / nodes.length;
         this.y = sumY / nodes.length;
         this.zoom = 1;
+        if (this.onTransformChange) this.onTransformChange();
     }
 
     /**

@@ -34,6 +34,14 @@ class ProjectStore {
 
         /** @type {Array<() => void>} Change listeners */
         this.listeners = [];
+
+        /** @type {number|null} Auto-save debounce timer */
+        this._saveTimeout = null;
+        /** @type {number|null} View state debounce timer */
+        this._viewStateTimeout = null;
+
+        /** @type {((status: "saving"|"saved") => void)|null} */
+        this.onSaveStatusChange = null;
     }
 
     /**
@@ -71,7 +79,7 @@ class ProjectStore {
             listener();
         }
         if (this.db) {
-            this.saveProject();
+            this.debouncedSaveProject();
         }
     }
 
@@ -227,17 +235,31 @@ class ProjectStore {
 
     /**
      * Load project from IndexedDB.
-     * @param {string} projectId
-     * @returns {Promise<void>}
+    /**
+     * Debounced auto-save of active project to IndexedDB.
+    /**
+     * @param {"saving"|"saved"} status
      */
-    async loadProject(projectId) {
-        if (!this.db) return;
-        const saved = await this.db.get(projectId);
-        if (saved) {
-            this.doc = saved;
-            this.currentParentId = null;
-            this.notify();
+    setSaveStatus(status) {
+        if (this.onSaveStatusChange) {
+            this.onSaveStatusChange(status);
         }
+    }
+
+    /**
+     * Debounced auto-save of active project to IndexedDB.
+     */
+    debouncedSaveProject() {
+        if (!this.db) return;
+        this.setSaveStatus("saving");
+        if (this._saveTimeout) clearTimeout(this._saveTimeout);
+        this._saveTimeout = setTimeout(async () => {
+            this._saveTimeout = null;
+            await this.saveProject();
+            if (!this._viewStateTimeout) {
+                this.setSaveStatus("saved");
+            }
+        }, 300);
     }
 
     /**
@@ -246,7 +268,54 @@ class ProjectStore {
      */
     async saveProject() {
         if (!this.db) return;
-        await this.db.set(this.projectId, this.doc);
+        await this.db.set("project_" + this.projectId, this.doc);
+    }
+
+    /**
+     * Debounced auto-save of active view state (current layer + camera).
+     * @param {Camera} camera
+     */
+    debouncedSaveViewState(camera) {
+        if (!this.db) return;
+        this.setSaveStatus("saving");
+        if (this._viewStateTimeout) clearTimeout(this._viewStateTimeout);
+        this._viewStateTimeout = setTimeout(async () => {
+            this._viewStateTimeout = null;
+            await this.saveViewState(camera);
+            if (!this._saveTimeout) {
+                this.setSaveStatus("saved");
+            }
+        }, 300);
+    }
+
+    /**
+     * Save active view state (current layer + camera) to IndexedDB.
+     * @param {Camera} camera
+     * @returns {Promise<void>}
+     */
+    async saveViewState(camera) {
+        if (!this.db) return;
+        const state = {
+            currentParentId: this.currentParentId,
+            camera: camera ? { x: camera.x, y: camera.y, zoom: camera.zoom } : null
+        };
+        await this.db.set("view_state_" + this.projectId, state);
+    }
+
+    /**
+     * Load project from IndexedDB.
+     * @param {string} [projectId]
+     * @returns {Promise<boolean>}
+     */
+    async loadProject(projectId = this.projectId) {
+        if (!this.db) return false;
+        this.projectId = projectId;
+        const saved = await this.db.get("project_" + projectId);
+        if (saved && Array.isArray(saved.nodes)) {
+            this.doc = saved;
+            return true;
+        }
+        return false;
     }
 
     /**
