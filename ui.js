@@ -54,6 +54,30 @@ class UIController {
         /** @type {Array<string>} Active overlay stack in LIFO order */
         this.overlayStack = [];
 
+        /** @type {HTMLElement|null} Bottom-center visual sequence HUD indicator */
+        this.sequenceIndicator = null;
+
+        /** @type {HTMLElement|null} Top-bar project selector button */
+        this.projectSelectorBtn = null;
+        /** @type {HTMLElement|null} Top-bar project dropdown menu */
+        this.projectMenu = null;
+        /** @type {boolean} */
+        this.isProjectMenuOpen = false;
+
+        /** @type {HTMLElement|null} Quick Jump Palette modal */
+        this.jumpPalette = null;
+        /** @type {boolean} */
+        this.isJumpPaletteOpen = false;
+        /** @type {number} */
+        this.jumpSelectedIndex = 0;
+
+        /** @type {HTMLElement|null} Command Palette (Spotlight / Actions) modal */
+        this.commandPalette = null;
+        /** @type {boolean} */
+        this.isCommandPaletteOpen = false;
+        /** @type {number} */
+        this.commandSelectedIndex = 0;
+
         /** @type {HTMLElement|null} Top-bar save status indicator */
         this.saveIndicator = null;
         /** @type {number|null} */
@@ -64,6 +88,7 @@ class UIController {
             this.store.onSaveStatusChange = (status) => this.updateSaveIndicator(status);
         }
         this.store.subscribe(() => {
+            this.updateProjectSelectorLabel();
             this.renderBreadcrumbs();
             if (this.activeFilterNode) {
                 const nodeStillVisible = this.store.getVisibleNodes().some(n => n.id === this.activeFilterNode.id);
@@ -128,6 +153,18 @@ class UIController {
         // 3. Pop topmost overlay from stack
         while (this.overlayStack.length > 0) {
             const top = this.overlayStack.pop();
+            if (top === "commandPalette" && this.isCommandPaletteOpen) {
+                this.closeCommandPalette();
+                return true;
+            }
+            if (top === "jumpPalette" && this.isJumpPaletteOpen) {
+                this.closeJumpPalette();
+                return true;
+            }
+            if (top === "projects" && this.isProjectMenuOpen) {
+                this.closeProjectMenu();
+                return true;
+            }
             if (top === "propFilter" && this.propFilterCard && this.propFilterCard.style.display !== "none") {
                 this.closePropertyQuickFilter();
                 return true;
@@ -143,6 +180,18 @@ class UIController {
         }
 
         // 4. Fallbacks in case an overlay was opened without stack tracking
+        if (this.isCommandPaletteOpen) {
+            this.closeCommandPalette();
+            return true;
+        }
+        if (this.isJumpPaletteOpen) {
+            this.closeJumpPalette();
+            return true;
+        }
+        if (this.isProjectMenuOpen) {
+            this.closeProjectMenu();
+            return true;
+        }
         if (this.propFilterCard && this.propFilterCard.style.display !== "none") {
             this.closePropertyQuickFilter();
             return true;
@@ -169,7 +218,9 @@ class UIController {
             bindings: Array.from(this.actionRegistry.bindings.entries()),
             autoOpenInspector: this.autoOpenInspector,
             autoCloseInspector: this.autoCloseInspector,
-            dragThreshold: this.canvasView.dragThreshold
+            dragThreshold: this.canvasView.dragThreshold,
+            snapGridSize: this.canvasView.snapGridSize,
+            alwaysSnapToGrid: this.canvasView.alwaysSnapToGrid
         };
         await this.store.db.set("user_settings", settings);
         if (this.store.setSaveStatus) this.store.setSaveStatus("saved");
@@ -239,7 +290,7 @@ class UIController {
         // Settings gear button (left of breadcrumbs)
         const gearBtn = document.createElement("button");
         gearBtn.innerHTML = "⚙️";
-        gearBtn.title = "Settings (Keybindings, Custom Types, Reset)";
+        gearBtn.title = "Settings / System Menu (Ctrl+, / Cmd+,)";
         gearBtn.style.cssText = `
             background: transparent;
             border: 1px solid rgba(100, 116, 139, 0.4);
@@ -260,6 +311,36 @@ class UIController {
         });
         gearBtn.addEventListener("click", () => this.toggleSettings());
         this.topBar.appendChild(gearBtn);
+
+        // Project selector button (between gear and breadcrumbs)
+        this.projectSelectorBtn = document.createElement("button");
+        this.projectSelectorBtn.id = "project-selector-btn";
+        this.projectSelectorBtn.style.cssText = `
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(30, 41, 59, 0.7);
+            border: 1px solid rgba(100, 116, 139, 0.4);
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 4px 10px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            max-width: 220px;
+        `;
+        this.projectSelectorBtn.addEventListener("mouseenter", () => {
+            this.projectSelectorBtn.style.background = "rgba(255, 255, 255, 0.1)";
+            this.projectSelectorBtn.style.borderColor = "#94a3b8";
+        });
+        this.projectSelectorBtn.addEventListener("mouseleave", () => {
+            this.projectSelectorBtn.style.background = "rgba(30, 41, 59, 0.7)";
+            this.projectSelectorBtn.style.borderColor = "rgba(100, 116, 139, 0.4)";
+        });
+        this.projectSelectorBtn.addEventListener("click", () => this.toggleProjectMenu());
+        this.topBar.appendChild(this.projectSelectorBtn);
+        this.updateProjectSelectorLabel();
 
         // Breadcrumb container
         this.breadcrumbContainer = document.createElement("div");
@@ -296,6 +377,60 @@ class UIController {
             <span>Saved</span>
         `;
         rightBar.appendChild(this.saveIndicator);
+
+        // Command Palette (Actions Super Menu) button
+        const actionsBtn = document.createElement("button");
+        actionsBtn.innerHTML = "⚡ Actions (Ctrl+Space)";
+        actionsBtn.title = "Open Command Palette / Search all actions (Ctrl+Space / Cmd+Space)";
+        actionsBtn.style.cssText = `
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            border-radius: 6px;
+            color: #cbd5e1;
+            font-size: 12px;
+            padding: 4px 10px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        `;
+        actionsBtn.addEventListener("mouseenter", () => {
+            actionsBtn.style.background = "rgba(168, 85, 247, 0.25)";
+            actionsBtn.style.borderColor = "rgba(168, 85, 247, 0.6)";
+            actionsBtn.style.color = "#d8b4fe";
+        });
+        actionsBtn.addEventListener("mouseleave", () => {
+            actionsBtn.style.background = "rgba(30, 41, 59, 0.8)";
+            actionsBtn.style.borderColor = "rgba(51, 65, 85, 0.8)";
+            actionsBtn.style.color = "#cbd5e1";
+        });
+        actionsBtn.addEventListener("click", () => this.toggleCommandPalette());
+        rightBar.appendChild(actionsBtn);
+
+        // Jump to Bubble / Layer Search button
+        const jumpBtn = document.createElement("button");
+        jumpBtn.innerHTML = "🔍 Jump (Ctrl+K)";
+        jumpBtn.title = "Jump to any bubble or layer (Ctrl+K / Cmd+K / J)";
+        jumpBtn.style.cssText = `
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            border-radius: 6px;
+            color: #cbd5e1;
+            font-size: 12px;
+            padding: 4px 10px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        `;
+        jumpBtn.addEventListener("mouseenter", () => {
+            jumpBtn.style.background = "rgba(59, 130, 246, 0.25)";
+            jumpBtn.style.borderColor = "rgba(59, 130, 246, 0.6)";
+            jumpBtn.style.color = "#93c5fd";
+        });
+        jumpBtn.addEventListener("mouseleave", () => {
+            jumpBtn.style.background = "rgba(30, 41, 59, 0.8)";
+            jumpBtn.style.borderColor = "rgba(51, 65, 85, 0.8)";
+            jumpBtn.style.color = "#cbd5e1";
+        });
+        jumpBtn.addEventListener("click", () => this.toggleJumpPalette());
+        rightBar.appendChild(jumpBtn);
 
         const inspectBtn = document.createElement("button");
         inspectBtn.innerHTML = "📝 Inspect (I)";
@@ -398,8 +533,127 @@ class UIController {
         });
         document.body.appendChild(this.propFilterCard);
 
-        // Close quick-filter card when clicking outside
+        // Floating Project Switcher Dropdown Menu
+        this.projectMenu = document.createElement("div");
+        this.projectMenu.id = "project-menu";
+        this.projectMenu.style.cssText = `
+            position: fixed;
+            width: 280px;
+            max-height: 380px;
+            background: rgba(15, 23, 42, 0.98);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            border-radius: 8px;
+            box-shadow: 0 12px 36px rgba(0, 0, 0, 0.7);
+            display: none;
+            flex-direction: column;
+            z-index: 50;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #f1f5f9;
+            padding: 10px;
+            gap: 8px;
+            outline: none;
+        `;
+        document.body.appendChild(this.projectMenu);
+
+        // Floating Jump to Bubble / Layer Palette
+        this.jumpPalette = document.createElement("div");
+        this.jumpPalette.id = "jump-palette";
+        this.jumpPalette.style.cssText = `
+            position: fixed;
+            top: 15%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 520px;
+            max-width: 90vw;
+            background: rgba(15, 23, 42, 0.97);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(59, 130, 246, 0.5);
+            border-radius: 10px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 20px rgba(59, 130, 246, 0.2);
+            display: none;
+            flex-direction: column;
+            z-index: 60;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #f1f5f9;
+            padding: 12px;
+            gap: 10px;
+            outline: none;
+        `;
+        document.body.appendChild(this.jumpPalette);
+
+        // Floating Command Palette (Spotlight / Super Menu)
+        this.commandPalette = document.createElement("div");
+        this.commandPalette.id = "command-palette";
+        this.commandPalette.style.cssText = `
+            position: fixed;
+            top: 15%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 540px;
+            max-width: 90vw;
+            background: rgba(15, 23, 42, 0.97);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(168, 85, 247, 0.5);
+            border-radius: 10px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 25px rgba(168, 85, 247, 0.2);
+            display: none;
+            flex-direction: column;
+            z-index: 60;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #f1f5f9;
+            padding: 12px;
+            gap: 10px;
+            outline: none;
+        `;
+        document.body.appendChild(this.commandPalette);
+
+        // Floating Leader Key / Sequence HUD Indicator (Bottom-Center)
+        this.sequenceIndicator = document.createElement("div");
+        this.sequenceIndicator.id = "sequence-hud";
+        this.sequenceIndicator.style.cssText = `
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(15, 23, 42, 0.94);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(56, 189, 248, 0.7);
+            border-radius: 8px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8), 0 0 15px rgba(56, 189, 248, 0.25);
+            display: none;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 16px;
+            font-family: system-ui, -apple-system, sans-serif;
+            font-size: 13px;
+            color: #f1f5f9;
+            z-index: 100;
+            pointer-events: none;
+            transition: opacity 0.15s ease;
+        `;
+        document.body.appendChild(this.sequenceIndicator);
+
+        // Close dropdowns and overlays when clicking outside
         window.addEventListener("mousedown", (e) => {
+            // Close command palette when clicking outside
+            if (this.isCommandPaletteOpen && this.commandPalette) {
+                if (!this.commandPalette.contains(e.target)) {
+                    this.closeCommandPalette();
+                }
+            }
+            // Close jump palette when clicking outside
+            if (this.isJumpPaletteOpen && this.jumpPalette) {
+                if (!this.jumpPalette.contains(e.target)) {
+                    this.closeJumpPalette();
+                }
+            }
+            // Close project menu when clicking outside
+            if (this.isProjectMenuOpen && this.projectMenu) {
+                if (!this.projectMenu.contains(e.target) && !this.projectSelectorBtn.contains(e.target)) {
+                    this.closeProjectMenu();
+                }
+            }
             if (this.propFilterCard && this.propFilterCard.style.display !== "none") {
                 if (this.propFilterCard.contains(e.target)) return;
                 if (e.target === this.canvasView.canvas) {
@@ -415,7 +669,38 @@ class UIController {
         this.renderBreadcrumbs();
     }
 
+    /**
+     * Show bottom sequence HUD indicator with current prefix steps.
+     * @param {string[]} steps
+     */
+    showSequenceHUD(steps) {
+        if (!this.sequenceIndicator) return;
+        const displaySteps = steps.map(s => {
+            const clean = s.startsWith("Key") ? s.slice(3) : (s.startsWith("Digit") ? s.slice(5) : s);
+            return `<kbd style="background: rgba(30, 41, 59, 0.9); border: 1px solid rgba(56, 189, 248, 0.6); border-radius: 4px; padding: 2px 7px; color: #38bdf8; font-weight: 700; font-family: monospace;">${clean}</kbd>`;
+        }).join(` <span style="color: #64748b; font-size: 11px;">▸</span> `);
+
+        this.sequenceIndicator.innerHTML = `
+            <span style="font-size: 15px;">⌨️</span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="color: #94a3b8; font-size: 12px; font-weight: 500;">Sequence:</span>
+                ${displaySteps}
+                <span style="color: #38bdf8; animation: pulse 1s infinite;">…</span>
+            </div>
+            <span style="color: #64748b; font-size: 11px; margin-left: 6px; border-left: 1px solid rgba(51, 65, 85, 0.8); padding-left: 10px;">Esc to cancel</span>
+        `;
+        this.sequenceIndicator.style.display = "flex";
+    }
+
+    /** Hide bottom sequence HUD indicator */
+    hideSequenceHUD() {
+        if (this.sequenceIndicator) {
+            this.sequenceIndicator.style.display = "none";
+        }
+    }
+
     // --- Property Quick-Filter Floating Card ---
+
 
     togglePropertyQuickFilter(node) {
         if (this.activeFilterNode === node && this.propFilterCard.style.display !== "none") {
@@ -721,6 +1006,683 @@ class UIController {
         }
     }
 
+    // --- Project Management Menu ---
+
+    /** Update label on top-bar project selector button. */
+    updateProjectSelectorLabel() {
+        if (!this.projectSelectorBtn) return;
+        const name = this.store ? this.store.projectName : "Project";
+        this.projectSelectorBtn.innerHTML = `
+            <span style="font-size: 14px;">📁</span>
+            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px;">${name || "Project"}</span>
+            <span style="font-size: 10px; opacity: 0.6; margin-left: 2px;">▾</span>
+        `;
+        this.projectSelectorBtn.title = `Project: ${name} (Click to switch or manage)`;
+    }
+
+    toggleProjectMenu() {
+        if (this.isProjectMenuOpen) {
+            this.closeProjectMenu();
+        } else {
+            this.openProjectMenu();
+        }
+    }
+
+    openProjectMenu() {
+        this.isProjectMenuOpen = true;
+        this.pushOverlay("projects");
+        if (this.projectSelectorBtn && this.projectMenu) {
+            const rect = this.projectSelectorBtn.getBoundingClientRect();
+            this.projectMenu.style.top = `${rect.bottom + 6}px`;
+            this.projectMenu.style.left = `${rect.left}px`;
+            this.projectMenu.style.display = "flex";
+        }
+        this.renderProjectMenuContent();
+    }
+
+    closeProjectMenu() {
+        this.isProjectMenuOpen = false;
+        this.removeOverlay("projects");
+        if (this.projectMenu) {
+            this.projectMenu.style.display = "none";
+        }
+    }
+
+    async renderProjectMenuContent() {
+        if (!this.projectMenu) return;
+        this.projectMenu.innerHTML = "";
+
+        const list = await this.store.listProjects();
+
+        // Header
+        const header = document.createElement("div");
+        header.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding-bottom: 6px; border-bottom: 1px solid rgba(51, 65, 85, 0.7);";
+
+        const title = document.createElement("span");
+        title.textContent = "Projects";
+        title.style.cssText = "font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8;";
+        header.appendChild(title);
+
+        const newBtn = document.createElement("button");
+        newBtn.textContent = "+ New";
+        newBtn.title = "Create new project";
+        newBtn.style.cssText = `
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid rgba(59, 130, 246, 0.5);
+            color: #93c5fd;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        `;
+        newBtn.addEventListener("mouseenter", () => {
+            newBtn.style.background = "rgba(59, 130, 246, 0.35)";
+        });
+        newBtn.addEventListener("mouseleave", () => {
+            newBtn.style.background = "rgba(59, 130, 246, 0.2)";
+        });
+        newBtn.addEventListener("click", async () => {
+            const name = window.prompt("New project name:", "New Project");
+            if (name !== null) {
+                await this.store.createProject(name, this.camera);
+                this.closeProjectMenu();
+            }
+        });
+        header.appendChild(newBtn);
+        this.projectMenu.appendChild(header);
+
+        // Project List Container
+        const listContainer = document.createElement("div");
+        listContainer.style.cssText = "display: flex; flex-direction: column; gap: 4px; overflow-y: auto; max-height: 280px;";
+
+        for (const proj of list) {
+            const isActive = proj.id === this.store.projectId;
+            const item = document.createElement("div");
+            item.style.cssText = `
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 6px 8px;
+                border-radius: 6px;
+                background: ${isActive ? "rgba(59, 130, 246, 0.18)" : "rgba(30, 41, 59, 0.5)"};
+                border: 1px solid ${isActive ? "rgba(59, 130, 246, 0.5)" : "transparent"};
+                cursor: pointer;
+                transition: all 0.15s ease;
+            `;
+            item.addEventListener("mouseenter", () => {
+                if (!isActive) {
+                    item.style.background = "rgba(255, 255, 255, 0.08)";
+                }
+            });
+            item.addEventListener("mouseleave", () => {
+                if (!isActive) {
+                    item.style.background = "rgba(30, 41, 59, 0.5)";
+                }
+            });
+
+            // Name and active marker
+            const nameLabel = document.createElement("div");
+            nameLabel.style.cssText = `
+                flex: 1;
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                font-size: 13px;
+                font-weight: ${isActive ? "600" : "400"};
+                color: ${isActive ? "#60a5fa" : "#f1f5f9"};
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            `;
+            nameLabel.innerHTML = `<span>${isActive ? "✓" : "📁"}</span><span style="overflow: hidden; text-overflow: ellipsis;">${proj.name}</span>`;
+            nameLabel.addEventListener("click", async () => {
+                if (!isActive) {
+                    await this.store.switchProject(proj.id, this.camera);
+                }
+                this.closeProjectMenu();
+            });
+            item.appendChild(nameLabel);
+
+            // Action buttons container
+            const actions = document.createElement("div");
+            actions.style.cssText = "display: flex; align-items: center; gap: 4px; margin-left: 6px;";
+
+            // Rename (✏️)
+            const renameBtn = document.createElement("button");
+            renameBtn.innerHTML = "✏️";
+            renameBtn.title = "Rename project";
+            renameBtn.style.cssText = "background: transparent; border: none; font-size: 11px; cursor: pointer; padding: 2px; opacity: 0.7;";
+            renameBtn.addEventListener("mouseenter", () => renameBtn.style.opacity = "1");
+            renameBtn.addEventListener("mouseleave", () => renameBtn.style.opacity = "0.7");
+            renameBtn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                const newName = window.prompt("Rename project:", proj.name);
+                if (newName !== null) {
+                    await this.store.renameProject(proj.id, newName);
+                    this.renderProjectMenuContent();
+                }
+            });
+            actions.appendChild(renameBtn);
+
+            // Duplicate (📋)
+            const dupBtn = document.createElement("button");
+            dupBtn.innerHTML = "📋";
+            dupBtn.title = "Duplicate project";
+            dupBtn.style.cssText = "background: transparent; border: none; font-size: 11px; cursor: pointer; padding: 2px; opacity: 0.7;";
+            dupBtn.addEventListener("mouseenter", () => dupBtn.style.opacity = "1");
+            dupBtn.addEventListener("mouseleave", () => dupBtn.style.opacity = "0.7");
+            dupBtn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                await this.store.duplicateProject(proj.id, this.camera);
+                this.closeProjectMenu();
+            });
+            actions.appendChild(dupBtn);
+
+            // Delete (🗑️)
+            const delBtn = document.createElement("button");
+            delBtn.innerHTML = "🗑️";
+            delBtn.title = "Delete project";
+            delBtn.style.cssText = "background: transparent; border: none; font-size: 11px; cursor: pointer; padding: 2px; opacity: 0.7;";
+            delBtn.addEventListener("mouseenter", () => delBtn.style.opacity = "1");
+            delBtn.addEventListener("mouseleave", () => delBtn.style.opacity = "0.7");
+            delBtn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                const confirmed = window.confirm(`Delete project "${proj.name}"? This cannot be undone.`);
+                if (confirmed) {
+                    await this.store.deleteProject(proj.id, this.camera);
+                    this.renderProjectMenuContent();
+                }
+            });
+            actions.appendChild(delBtn);
+
+            item.appendChild(actions);
+            listContainer.appendChild(item);
+        }
+
+        this.projectMenu.appendChild(listContainer);
+    }
+
+    // --- Quick Jump Palette (Jump to Bubble / Layer) ---
+
+    toggleJumpPalette() {
+        if (this.isJumpPaletteOpen) {
+            this.closeJumpPalette();
+        } else {
+            this.openJumpPalette();
+        }
+    }
+
+    openJumpPalette() {
+        this.isJumpPaletteOpen = true;
+        this.pushOverlay("jumpPalette");
+        if (this.jumpPalette) {
+            this.jumpPalette.style.display = "flex";
+            this.jumpSelectedIndex = 0;
+            this.renderJumpPalette();
+        }
+    }
+
+    closeJumpPalette() {
+        this.isJumpPaletteOpen = false;
+        this.removeOverlay("jumpPalette");
+        if (this.jumpPalette) {
+            this.jumpPalette.style.display = "none";
+        }
+    }
+
+    renderJumpPalette() {
+        if (!this.jumpPalette) return;
+        this.jumpPalette.innerHTML = "";
+
+        // Search Input Header
+        const searchInput = document.createElement("input");
+        searchInput.type = "text";
+        searchInput.placeholder = "Jump to bubble or layer... (↑/↓ to navigate, Enter to jump)";
+        searchInput.style.cssText = `
+            background: rgba(30, 41, 59, 0.9);
+            border: 1px solid rgba(59, 130, 246, 0.6);
+            border-radius: 6px;
+            color: #f8fafc;
+            font-size: 14px;
+            padding: 8px 12px;
+            outline: none;
+            width: 100%;
+            box-sizing: border-box;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.15);
+        `;
+
+        // Results Container
+        const resultsContainer = document.createElement("div");
+        resultsContainer.style.cssText = "display: flex; flex-direction: column; gap: 4px; max-height: 280px; overflow-y: auto; margin-top: 4px;";
+
+        const getMatches = (query) => {
+            const q = query.trim().toLowerCase();
+            const matches = [];
+
+            // Always add Root option if query matches root or is empty
+            if (!q || "root".includes(q) || "project".includes(q)) {
+                matches.push({
+                    type: "root",
+                    label: "Root Layer",
+                    ns: "Root",
+                    node: null,
+                    isCurrent: this.store.currentParentId === null,
+                    childCount: this.store.doc.nodes.filter(n => n.parentId === null).length
+                });
+            }
+
+            for (const node of this.store.doc.nodes) {
+                const ns = this.getNodeNamespace(node);
+                const label = node.label || "";
+                const desc = node.description || "";
+
+                if (!q || label.toLowerCase().includes(q) || ns.toLowerCase().includes(q) || desc.toLowerCase().includes(q)) {
+                    matches.push({
+                        type: "node",
+                        label: label,
+                        ns: ns,
+                        node: node,
+                        isCurrent: this.store.currentParentId === node.id || (this.canvasView.selectedNode && this.canvasView.selectedNode.id === node.id),
+                        childCount: this.store.doc.nodes.filter(n => n.parentId === node.id).length
+                    });
+                }
+            }
+
+            return matches.slice(0, 30);
+        };
+
+        let currentMatches = getMatches("");
+
+        const updateHighlight = () => {
+            Array.from(resultsContainer.children).forEach((child, i) => {
+                const isSel = i === this.jumpSelectedIndex;
+                child.style.background = isSel ? "rgba(59, 130, 246, 0.25)" : "rgba(30, 41, 59, 0.5)";
+                child.style.borderColor = isSel ? "rgba(59, 130, 246, 0.6)" : "transparent";
+            });
+            const selEl = resultsContainer.children[this.jumpSelectedIndex];
+            if (selEl && selEl.scrollIntoViewIfNeeded) {
+                selEl.scrollIntoViewIfNeeded(false);
+            }
+        };
+
+        const renderRows = () => {
+            resultsContainer.innerHTML = "";
+            if (currentMatches.length === 0) {
+                const empty = document.createElement("div");
+                empty.textContent = "No matching bubbles found";
+                empty.style.cssText = "font-size: 12px; color: #64748b; font-style: italic; padding: 10px; text-align: center;";
+                resultsContainer.appendChild(empty);
+                return;
+            }
+
+            if (this.jumpSelectedIndex >= currentMatches.length) {
+                this.jumpSelectedIndex = Math.max(0, currentMatches.length - 1);
+            }
+
+            currentMatches.forEach((item, idx) => {
+                const isSelected = idx === this.jumpSelectedIndex;
+                const row = document.createElement("div");
+                row.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 8px 10px;
+                    border-radius: 6px;
+                    background: ${isSelected ? "rgba(59, 130, 246, 0.25)" : "rgba(30, 41, 59, 0.5)"};
+                    border: 1px solid ${isSelected ? "rgba(59, 130, 246, 0.6)" : "transparent"};
+                    cursor: pointer;
+                    transition: all 0.1s ease;
+                `;
+
+                row.addEventListener("mouseenter", () => {
+                    this.jumpSelectedIndex = idx;
+                    updateHighlight();
+                });
+
+                row.addEventListener("mousedown", (e) => {
+                    e.preventDefault();
+                    this.executeJump(item);
+                });
+
+                row.addEventListener("click", () => {
+                    this.executeJump(item);
+                });
+
+                // Left: Icon + Label + Path
+                const left = document.createElement("div");
+                left.style.cssText = "display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;";
+
+                const icon = document.createElement("span");
+                icon.textContent = item.type === "root" ? "🏠" : (item.childCount > 0 ? "📁" : "🫧");
+                icon.style.cssText = "font-size: 14px; opacity: 0.9;";
+                left.appendChild(icon);
+
+                const info = document.createElement("div");
+                info.style.cssText = "display: flex; flex-direction: column; overflow: hidden;";
+
+                const titleRow = document.createElement("div");
+                titleRow.style.cssText = "font-size: 13px; font-weight: 600; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+                titleRow.textContent = item.label;
+                info.appendChild(titleRow);
+
+                const pathRow = document.createElement("div");
+                pathRow.style.cssText = "font-size: 11px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+                pathRow.textContent = item.ns.split(".").join(" › ");
+                info.appendChild(pathRow);
+
+                left.appendChild(info);
+                row.appendChild(left);
+
+                // Right: Badges
+                const right = document.createElement("div");
+                right.style.cssText = "display: flex; align-items: center; gap: 6px; margin-left: 8px;";
+
+                if (item.childCount > 0) {
+                    const badge = document.createElement("span");
+                    badge.textContent = `${item.childCount} inside`;
+                    badge.style.cssText = "font-size: 10px; background: rgba(59, 130, 246, 0.2); color: #93c5fd; padding: 2px 6px; border-radius: 4px;";
+                    right.appendChild(badge);
+                }
+
+                if (item.isCurrent) {
+                    const curBadge = document.createElement("span");
+                    curBadge.textContent = "Current Layer";
+                    curBadge.style.cssText = "font-size: 10px; background: rgba(16, 185, 129, 0.2); color: #6ee7b7; padding: 2px 6px; border-radius: 4px;";
+                    right.appendChild(curBadge);
+                }
+
+                row.appendChild(right);
+                resultsContainer.appendChild(row);
+            });
+
+            // Ensure selected element is scrolled into view
+            const selectedEl = resultsContainer.children[this.jumpSelectedIndex];
+            if (selectedEl && selectedEl.scrollIntoViewIfNeeded) {
+                selectedEl.scrollIntoViewIfNeeded(false);
+            }
+        };
+
+        searchInput.addEventListener("input", () => {
+            this.jumpSelectedIndex = 0;
+            currentMatches = getMatches(searchInput.value);
+            renderRows();
+        });
+
+        searchInput.addEventListener("keydown", (e) => {
+            if (e.key === "ArrowDown") {
+                e.preventDefault();
+                if (currentMatches.length > 0) {
+                    this.jumpSelectedIndex = (this.jumpSelectedIndex + 1) % currentMatches.length;
+                    updateHighlight();
+                }
+            } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                if (currentMatches.length > 0) {
+                    this.jumpSelectedIndex = (this.jumpSelectedIndex - 1 + currentMatches.length) % currentMatches.length;
+                    updateHighlight();
+                }
+            } else if (e.key === "Enter") {
+                e.preventDefault();
+                if (currentMatches[this.jumpSelectedIndex]) {
+                    this.executeJump(currentMatches[this.jumpSelectedIndex]);
+                }
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                this.closeJumpPalette();
+            }
+        });
+
+        this.jumpPalette.appendChild(searchInput);
+        this.jumpPalette.appendChild(resultsContainer);
+        renderRows();
+
+        setTimeout(() => searchInput.focus(), 20);
+    }
+
+    executeJump(item) {
+        if (!item) return;
+
+        if (item.type === "root") {
+            this.store.currentParentId = null;
+            this.canvasView.selectedNode = null;
+            this.canvasView.selectedRelationship = null;
+            this.store.notify();
+            this.camera.fitToNodes(this.store.getVisibleNodes());
+        } else if (item.node) {
+            const target = item.node;
+            // Navigate to the layer containing target
+            this.store.currentParentId = target.parentId;
+            this.canvasView.selectedNode = target;
+            this.canvasView.selectedRelationship = null;
+            this.store.notify();
+
+            // Center camera directly on target node
+            this.camera.x = target.x;
+            this.camera.y = target.y;
+            if (this.camera.onTransformChange) this.camera.onTransformChange();
+        }
+
+        this.closeJumpPalette();
+    }
+
+    // --- Command Palette (Spotlight / Actions Super Menu) ---
+
+    toggleCommandPalette() {
+        if (this.isCommandPaletteOpen) {
+            this.closeCommandPalette();
+        } else {
+            this.openCommandPalette();
+        }
+    }
+
+    openCommandPalette() {
+        this.isCommandPaletteOpen = true;
+        this.pushOverlay("commandPalette");
+        if (this.commandPalette) {
+            this.commandPalette.style.display = "flex";
+            this.commandSelectedIndex = 0;
+            this.renderCommandPalette();
+        }
+    }
+
+    closeCommandPalette() {
+        this.isCommandPaletteOpen = false;
+        this.removeOverlay("commandPalette");
+        if (this.commandPalette) {
+            this.commandPalette.style.display = "none";
+        }
+    }
+
+    renderCommandPalette() {
+        if (!this.commandPalette) return;
+        this.commandPalette.innerHTML = "";
+
+        // Search Input Header
+        const searchInput = document.createElement("input");
+        searchInput.type = "text";
+        searchInput.placeholder = "Type a command or action... (↑/↓ to navigate, Enter to execute)";
+        searchInput.style.cssText = `
+            background: rgba(30, 41, 59, 0.9);
+            border: 1px solid rgba(168, 85, 247, 0.6);
+            border-radius: 6px;
+            color: #f8fafc;
+            font-size: 14px;
+            padding: 8px 12px;
+            outline: none;
+            width: 100%;
+            box-sizing: border-box;
+            box-shadow: 0 0 10px rgba(168, 85, 247, 0.15);
+        `;
+
+        // Results Container
+        const resultsContainer = document.createElement("div");
+        resultsContainer.style.cssText = "display: flex; flex-direction: column; gap: 4px; max-height: 290px; overflow-y: auto; margin-top: 4px;";
+
+        const allActions = this.actionRegistry.getAllActions();
+
+        const getMatches = (query) => {
+            const q = query.trim().toLowerCase();
+            if (!q) return allActions;
+            return allActions.filter(act => {
+                const title = (act.title || "").toLowerCase();
+                const desc = (act.description || "").toLowerCase();
+                const id = act.id.toLowerCase();
+                const triggers = this.actionRegistry.getTriggersForAction(act.id).join(" ").toLowerCase();
+                return title.includes(q) || desc.includes(q) || id.includes(q) || triggers.includes(q);
+            });
+        };
+
+        let currentMatches = getMatches("");
+
+        const updateHighlight = () => {
+            Array.from(resultsContainer.children).forEach((child, i) => {
+                const isSel = i === this.commandSelectedIndex;
+                child.style.background = isSel ? "rgba(168, 85, 247, 0.25)" : "rgba(30, 41, 59, 0.5)";
+                child.style.borderColor = isSel ? "rgba(168, 85, 247, 0.6)" : "transparent";
+            });
+            const selEl = resultsContainer.children[this.commandSelectedIndex];
+            if (selEl && selEl.scrollIntoViewIfNeeded) {
+                selEl.scrollIntoViewIfNeeded(false);
+            }
+        };
+
+        const renderRows = () => {
+            resultsContainer.innerHTML = "";
+            if (currentMatches.length === 0) {
+                const empty = document.createElement("div");
+                empty.textContent = "No matching commands found";
+                empty.style.cssText = "font-size: 12px; color: #64748b; font-style: italic; padding: 10px; text-align: center;";
+                resultsContainer.appendChild(empty);
+                return;
+            }
+
+            if (this.commandSelectedIndex >= currentMatches.length) {
+                this.commandSelectedIndex = Math.max(0, currentMatches.length - 1);
+            }
+
+            currentMatches.forEach((act, idx) => {
+                const isSelected = idx === this.commandSelectedIndex;
+                const row = document.createElement("div");
+                row.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 8px 10px;
+                    border-radius: 6px;
+                    background: ${isSelected ? "rgba(168, 85, 247, 0.25)" : "rgba(30, 41, 59, 0.5)"};
+                    border: 1px solid ${isSelected ? "rgba(168, 85, 247, 0.6)" : "transparent"};
+                    cursor: pointer;
+                    transition: all 0.1s ease;
+                `;
+
+                row.addEventListener("mouseenter", () => {
+                    this.commandSelectedIndex = idx;
+                    updateHighlight();
+                });
+
+                row.addEventListener("mousedown", (e) => {
+                    e.preventDefault();
+                    this.executeCommand(act);
+                });
+
+                row.addEventListener("click", () => {
+                    this.executeCommand(act);
+                });
+
+                // Left: Title + Description
+                const left = document.createElement("div");
+                left.style.cssText = "display: flex; flex-direction: column; flex: 1; min-width: 0;";
+
+                const titleRow = document.createElement("div");
+                titleRow.style.cssText = "font-size: 13px; font-weight: 600; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+                titleRow.textContent = act.title;
+                left.appendChild(titleRow);
+
+                if (act.description) {
+                    const descRow = document.createElement("div");
+                    descRow.style.cssText = "font-size: 11px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+                    descRow.textContent = act.description;
+                    left.appendChild(descRow);
+                }
+
+                row.appendChild(left);
+
+                // Right: Shortcut pills
+                const triggers = this.actionRegistry.getTriggersForAction(act.id);
+                if (triggers.length > 0) {
+                    const right = document.createElement("div");
+                    right.style.cssText = "display: flex; align-items: center; gap: 4px; margin-left: 8px;";
+                    for (const trig of triggers.slice(0, 2)) {
+                        const pill = document.createElement("span");
+                        pill.textContent = trig;
+                        pill.style.cssText = "font-size: 10px; font-family: monospace; background: rgba(51, 65, 85, 0.7); border: 1px solid rgba(100, 116, 139, 0.4); color: #cbd5e1; padding: 2px 5px; border-radius: 4px;";
+                        right.appendChild(pill);
+                    }
+                    row.appendChild(right);
+                }
+
+                resultsContainer.appendChild(row);
+            });
+
+            const selectedEl = resultsContainer.children[this.commandSelectedIndex];
+            if (selectedEl && selectedEl.scrollIntoViewIfNeeded) {
+                selectedEl.scrollIntoViewIfNeeded(false);
+            }
+        };
+
+        searchInput.addEventListener("input", () => {
+            this.commandSelectedIndex = 0;
+            currentMatches = getMatches(searchInput.value);
+            renderRows();
+        });
+
+        searchInput.addEventListener("keydown", (e) => {
+            if (e.key === "ArrowDown") {
+                e.preventDefault();
+                if (currentMatches.length > 0) {
+                    this.commandSelectedIndex = (this.commandSelectedIndex + 1) % currentMatches.length;
+                    updateHighlight();
+                }
+            } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                if (currentMatches.length > 0) {
+                    this.commandSelectedIndex = (this.commandSelectedIndex - 1 + currentMatches.length) % currentMatches.length;
+                    updateHighlight();
+                }
+            } else if (e.key === "Enter") {
+                e.preventDefault();
+                if (currentMatches[this.commandSelectedIndex]) {
+                    this.executeCommand(currentMatches[this.commandSelectedIndex]);
+                }
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                this.closeCommandPalette();
+            }
+        });
+
+        this.commandPalette.appendChild(searchInput);
+        this.commandPalette.appendChild(resultsContainer);
+        renderRows();
+
+        setTimeout(() => searchInput.focus(), 20);
+    }
+
+    executeCommand(action) {
+        if (!action) return;
+        this.closeCommandPalette();
+        const context = {
+            store: this.store,
+            canvasView: this.canvasView,
+            camera: this.camera,
+            node: this.canvasView.selectedNode,
+            relationship: this.canvasView.selectedRelationship
+        };
+        this.actionRegistry.execute(action.id, context);
+    }
+
     // --- Breadcrumbs ---
 
     renderBreadcrumbs() {
@@ -731,7 +1693,7 @@ class UIController {
         const isAtRoot = this.store.currentParentId == null;
 
         // Root button
-        const rootBtn = this.createCrumbButton("Root (Project)", isAtRoot, () => {
+        const rootBtn = this.createCrumbButton("Root", isAtRoot, () => {
             this.actionRegistry.execute("jumpToLayer", {
                 store: this.store,
                 canvasView: this.canvasView,
@@ -1591,6 +2553,55 @@ class UIController {
         row3.appendChild(slider);
         list.appendChild(row3);
 
+        // Setting 4: Always Snap to Grid Checkbox
+        const row4 = document.createElement("label");
+        row4.style.cssText = "display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: #e2e8f0; margin-top: 4px;";
+        const check4 = document.createElement("input");
+        check4.type = "checkbox";
+        check4.checked = this.canvasView.alwaysSnapToGrid;
+        check4.style.cursor = "pointer";
+        check4.addEventListener("change", () => {
+            this.canvasView.alwaysSnapToGrid = check4.checked;
+            this.saveSettings();
+        });
+        const span4 = document.createElement("span");
+        span4.textContent = "Always snap to grid (hold Shift to drag freeform)";
+        row4.appendChild(check4);
+        row4.appendChild(span4);
+        list.appendChild(row4);
+
+        // Setting 5: Snap Grid Size Slider
+        const row5 = document.createElement("div");
+        row5.style.cssText = "display: flex; flex-direction: column; gap: 4px; margin-top: 6px;";
+        const row5Header = document.createElement("div");
+        row5Header.style.cssText = "display: flex; justify-content: space-between; font-size: 13px; color: #e2e8f0;";
+        const row5Title = document.createElement("span");
+        row5Title.textContent = "Snap Grid Size:";
+        const row5Val = document.createElement("span");
+        row5Val.textContent = `${this.canvasView.snapGridSize}px`;
+        row5Val.style.color = "#38bdf8";
+        row5Val.style.fontWeight = "600";
+        row5Header.appendChild(row5Title);
+        row5Header.appendChild(row5Val);
+        row5.appendChild(row5Header);
+
+        const slider5 = document.createElement("input");
+        slider5.type = "range";
+        slider5.min = "10";
+        slider5.max = "80";
+        slider5.step = "10";
+        slider5.value = this.canvasView.snapGridSize.toString();
+        slider5.style.cssText = "cursor: pointer; width: 100%; accent-color: #38bdf8;";
+        slider5.addEventListener("input", () => {
+            this.canvasView.snapGridSize = parseInt(slider5.value, 10);
+            row5Val.textContent = `${this.canvasView.snapGridSize}px`;
+        });
+        slider5.addEventListener("change", () => {
+            this.saveSettings();
+        });
+        row5.appendChild(slider5);
+        list.appendChild(row5);
+
         panel.appendChild(list);
         return panel;
     }
@@ -1637,10 +2648,14 @@ class UIController {
 
         // Build inverted map: actionId -> trigger list
         const actionToTriggers = new Map();
-        for (const [trigger, actionId] of this.actionRegistry.bindings.entries()) {
-            if (!actionToTriggers.has(actionId)) actionToTriggers.set(actionId, []);
-            actionToTriggers.get(actionId).push(trigger);
+        for (const [trigger, val] of this.actionRegistry.bindings.entries()) {
+            const actionIds = Array.isArray(val) ? val : [val];
+            for (const actionId of actionIds) {
+                if (!actionToTriggers.has(actionId)) actionToTriggers.set(actionId, []);
+                actionToTriggers.get(actionId).push(trigger);
+            }
         }
+        const conflicts = this.actionRegistry.detectConflicts();
 
         const cardsContainer = document.createElement("div");
         cardsContainer.style.cssText = "display: flex; flex-direction: column; gap: 12px;";
@@ -1692,28 +2707,57 @@ class UIController {
             }
 
             for (const trigger of triggers) {
+                const hasConflict = conflicts.has(trigger);
+                const otherTitles = hasConflict ? conflicts.get(trigger).filter(t => t !== action.title) : [];
+
                 const row = document.createElement("div");
                 row.style.cssText = `
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
-                    background: rgba(15, 23, 42, 0.7);
-                    border: 1px solid rgba(51, 65, 85, 0.4);
+                    background: ${hasConflict ? "rgba(251, 191, 36, 0.08)" : "rgba(15, 23, 42, 0.7)"};
+                    border: 1px solid ${hasConflict ? "rgba(251, 191, 36, 0.4)" : "rgba(51, 65, 85, 0.4)"};
                     border-radius: 4px;
                     padding: 4px 8px;
                 `;
 
+                const leftBadgeBox = document.createElement("div");
+                leftBadgeBox.style.cssText = "display: flex; align-items: center; gap: 6px;";
+
                 const isGesture = trigger.includes(":");
+                const isSequence = trigger.includes(" ") || trigger.includes(" > ");
                 const triggerBadge = document.createElement("span");
-                triggerBadge.textContent = isGesture
-                    ? (interactionOptions.find(o => o.value === trigger)?.label || trigger)
-                    : trigger;
+                if (isGesture) {
+                    triggerBadge.textContent = interactionOptions.find(o => o.value === trigger)?.label || trigger;
+                } else if (isSequence) {
+                    const steps = ActionRegistry.splitTrigger(trigger).map(s => s.startsWith("Key") ? s.slice(3) : s);
+                    triggerBadge.textContent = steps.join(" ➔ ");
+                } else {
+                    triggerBadge.textContent = trigger;
+                }
                 triggerBadge.style.cssText = `
                     font-family: ${isGesture ? "system-ui" : "monospace"};
                     font-size: 12px;
-                    color: ${isGesture ? "#fbbf24" : "#38bdf8"};
+                    font-weight: 600;
+                    color: ${hasConflict ? "#fde047" : (isGesture ? "#fbbf24" : (isSequence ? "#a78bfa" : "#38bdf8"))};
                 `;
-                row.appendChild(triggerBadge);
+                leftBadgeBox.appendChild(triggerBadge);
+
+                if (otherTitles.length > 0) {
+                    const conflictTag = document.createElement("span");
+                    conflictTag.textContent = `⚠️ Shared with ${otherTitles.join(", ")}`;
+                    conflictTag.title = `This shortcut is shared with: ${otherTitles.join(", ")}. It will run whichever action is enabled in the current context.`;
+                    conflictTag.style.cssText = `
+                        font-size: 10px;
+                        background: rgba(251, 191, 36, 0.15);
+                        border: 1px solid rgba(251, 191, 36, 0.4);
+                        color: #fde047;
+                        padding: 2px 6px;
+                        border-radius: 4px;
+                    `;
+                    leftBadgeBox.appendChild(conflictTag);
+                }
+                row.appendChild(leftBadgeBox);
 
                 // Unbind button (×)
                 const delBtn = document.createElement("button");
@@ -1730,7 +2774,7 @@ class UIController {
                 delBtn.addEventListener("mouseenter", () => delBtn.style.color = "#f43f5e");
                 delBtn.addEventListener("mouseleave", () => delBtn.style.color = "#94a3b8");
                 delBtn.addEventListener("click", () => {
-                    this.actionRegistry.unbind(trigger);
+                    this.actionRegistry.unbind(trigger, action.id);
                     this.saveSettings();
                     this.renderSettingsContent();
                 });
@@ -1744,16 +2788,18 @@ class UIController {
             const addRow = document.createElement("div");
             addRow.style.cssText = "display: flex; gap: 6px; margin-top: 4px;";
 
-            const isRecording = this.recordingActionId === action.id;
+            const isRecordingKey = this.recordingActionId === `${action.id}:key`;
+            const isRecordingSeq = this.recordingActionId === `${action.id}:seq`;
 
-            // Detect Key button
+            // Detect Key / Combo button
             const recordBtn = document.createElement("button");
-            recordBtn.textContent = isRecording ? "Press key now..." : "+ Keybind";
+            recordBtn.textContent = isRecordingKey ? "Press key..." : "+ Key / Combo";
+            recordBtn.title = "Record a single key or modifier combo (e.g. KeyE, Ctrl+KeyK, Shift+KeyI)";
             recordBtn.style.cssText = `
                 flex: 1;
-                background: ${isRecording ? "#e0f2fe" : "rgba(2, 132, 199, 0.2)"};
-                color: ${isRecording ? "#0369a1" : "#38bdf8"};
-                border: 1px solid ${isRecording ? "#38bdf8" : "rgba(56, 189, 248, 0.4)"};
+                background: ${isRecordingKey ? "#e0f2fe" : "rgba(2, 132, 199, 0.2)"};
+                color: ${isRecordingKey ? "#0369a1" : "#38bdf8"};
+                border: 1px solid ${isRecordingKey ? "#38bdf8" : "rgba(56, 189, 248, 0.4)"};
                 border-radius: 4px;
                 padding: 4px 8px;
                 font-size: 11px;
@@ -1762,24 +2808,135 @@ class UIController {
             `;
 
             recordBtn.addEventListener("click", () => {
-                this.recordingActionId = action.id;
+                this.recordingActionId = `${action.id}:key`;
                 this.renderSettingsContent();
 
-                const onNextKey = (e) => {
+                const heldKeys = new Set();
+
+                const onKeyDown = (e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    window.removeEventListener("keydown", onNextKey, true);
 
-                    const newTrigger = e.code.startsWith("Key") ? e.code : e.key;
-                    this.actionRegistry.bind(newTrigger, action.id);
-                    this.saveSettings();
+                    if (e.key === "Escape") {
+                        cleanup();
+                        return;
+                    }
+
+                    if (e.ctrlKey) heldKeys.add("Ctrl");
+                    if (e.altKey) heldKeys.add("Alt");
+                    if (e.shiftKey) heldKeys.add("Shift");
+                    if (e.metaKey) heldKeys.add("Meta");
+
+                    const code = e.code;
+                    const isModifier = ["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"].includes(code);
+                    if (!isModifier) {
+                        const keyName = code.startsWith("Key") ? code : (code === "Space" ? "Space" : (code.startsWith("Digit") ? code : e.key));
+                        heldKeys.add(keyName);
+                    } else {
+                        if (code.startsWith("Shift")) heldKeys.add("Shift");
+                        else if (code.startsWith("Control")) heldKeys.add("Ctrl");
+                        else if (code.startsWith("Alt")) heldKeys.add("Alt");
+                        else if (code.startsWith("Meta")) heldKeys.add("Meta");
+                    }
+
+                    recordBtn.textContent = Array.from(heldKeys).join("+") + "...";
+                };
+
+                const onKeyUp = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    cleanup();
+
+                    const order = ["Ctrl", "Alt", "Shift", "Meta"];
+                    const modifiers = order.filter(m => heldKeys.has(m));
+                    const normalKeys = Array.from(heldKeys).filter(k => !order.includes(k));
+                    const parts = [...modifiers, ...normalKeys];
+
+                    if (parts.length > 0) {
+                        const newTrigger = parts.join("+");
+                        this.actionRegistry.bind(newTrigger, action.id);
+                        this.saveSettings();
+                    }
+
                     this.recordingActionId = null;
                     this.renderSettingsContent();
                 };
 
-                window.addEventListener("keydown", onNextKey, true);
+                const cleanup = () => {
+                    window.removeEventListener("keydown", onKeyDown, true);
+                    window.removeEventListener("keyup", onKeyUp, true);
+                    this.recordingActionId = null;
+                    this.renderSettingsContent();
+                };
+
+                window.addEventListener("keydown", onKeyDown, true);
+                window.addEventListener("keyup", onKeyUp, true);
             });
             addRow.appendChild(recordBtn);
+
+            // Record Sequence (Leader Key) button
+            const recordSeqBtn = document.createElement("button");
+            recordSeqBtn.textContent = isRecordingSeq ? "Type keys... (Enter done)" : "+ Sequence";
+            recordSeqBtn.title = "Record sequential key presses (e.g. B then N -> B ➔ N). Press Enter to finish or Esc to cancel.";
+            recordSeqBtn.style.cssText = `
+                flex: 1;
+                background: ${isRecordingSeq ? "#f3e8ff" : "rgba(168, 85, 247, 0.2)"};
+                color: ${isRecordingSeq ? "#7e22ce" : "#c084fc"};
+                border: 1px solid ${isRecordingSeq ? "#c084fc" : "rgba(168, 85, 247, 0.4)"};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+                font-weight: 500;
+                cursor: pointer;
+            `;
+
+            recordSeqBtn.addEventListener("click", () => {
+                this.recordingActionId = `${action.id}:seq`;
+                this.renderSettingsContent();
+
+                const recordedSteps = [];
+
+                const onSeqKeyDown = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    if (e.key === "Escape") {
+                        cleanupSeq();
+                        return;
+                    }
+
+                    if (e.key === "Enter") {
+                        cleanupSeq();
+                        if (recordedSteps.length > 0) {
+                            const newTrigger = recordedSteps.join(" ");
+                            this.actionRegistry.bind(newTrigger, action.id);
+                            this.saveSettings();
+                        }
+                        this.recordingActionId = null;
+                        this.renderSettingsContent();
+                        return;
+                    }
+
+                    const code = e.code;
+                    const isModifier = ["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"].includes(code);
+                    if (!isModifier) {
+                        const stepName = code.startsWith("Key") ? code : (code === "Space" ? "Space" : (code.startsWith("Digit") ? code : e.key));
+                        recordedSteps.push(stepName);
+                        const displaySteps = recordedSteps.map(s => s.startsWith("Key") ? s.slice(3) : s).join(" ➔ ");
+                        recordSeqBtn.textContent = `${displaySteps} (Enter to finish)`;
+                    }
+                };
+
+                const cleanupSeq = () => {
+                    window.removeEventListener("keydown", onSeqKeyDown, true);
+                    this.recordingActionId = null;
+                    this.renderSettingsContent();
+                };
+
+                window.addEventListener("keydown", onSeqKeyDown, true);
+            });
+            addRow.appendChild(recordSeqBtn);
+
 
             // Dropdown for non-key gestures filtered by action target scope
             const targetScope = action.target || "global";
@@ -1947,38 +3104,42 @@ class UIController {
 
     createStoragePanel() {
         const panel = document.createElement("div");
+        panel.style.cssText = "border: 1px solid rgba(225, 29, 72, 0.4); border-radius: 6px; padding: 12px; background: rgba(225, 29, 72, 0.05);";
 
         const title = document.createElement("h3");
-        title.textContent = "Data & Storage";
+        title.textContent = "Danger Zone / Factory Reset";
         title.style.cssText = "margin: 0 0 6px 0; font-size: 14px; font-weight: 600; color: #fb7185;";
         panel.appendChild(title);
 
         const desc = document.createElement("p");
-        desc.textContent = "Reset project back to default state and clear local store:";
-        desc.style.cssText = "margin: 0 0 10px 0; font-size: 12px; color: #94a3b8;";
+        desc.innerHTML = "<strong style='color: #f87171;'>Warning:</strong> Factory Reset permanently deletes <strong>ALL projects</strong>, custom types, keybindings, and stored view states across the entire application.";
+        desc.style.cssText = "margin: 0 0 12px 0; font-size: 12px; color: #94a3b8; line-height: 1.4;";
         panel.appendChild(desc);
 
         const resetBtn = document.createElement("button");
-        resetBtn.textContent = "Reset Project Data";
+        resetBtn.textContent = "⚠️ Factory Reset: Clear All Projects & Storage";
         resetBtn.style.cssText = `
-            background: rgba(225, 29, 72, 0.15);
-            border: 1px solid rgba(225, 29, 72, 0.5);
+            background: rgba(225, 29, 72, 0.2);
+            border: 1px solid rgba(225, 29, 72, 0.6);
             color: #fda4af;
-            border-radius: 4px;
-            padding: 6px 12px;
+            border-radius: 6px;
+            padding: 8px 14px;
             font-size: 12px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.15s ease;
         `;
         resetBtn.addEventListener("mouseenter", () => {
-            resetBtn.style.background = "rgba(225, 29, 72, 0.3)";
+            resetBtn.style.background = "rgba(225, 29, 72, 0.35)";
         });
         resetBtn.addEventListener("mouseleave", () => {
-            resetBtn.style.background = "rgba(225, 29, 72, 0.15)";
+            resetBtn.style.background = "rgba(225, 29, 72, 0.2)";
         });
         resetBtn.addEventListener("click", async () => {
-            if (window.confirm("Reset all bubbles, connections, settings, and view state back to default?")) {
+            const confirmed = window.confirm(
+                "DANGER: Factory Reset will permanently delete ALL projects, all bubbles, all custom keybindings, and all local storage.\n\nAre you sure you want to proceed?"
+            );
+            if (confirmed) {
                 if (this.store && this.store.db) {
                     await this.store.db.clear();
                 }

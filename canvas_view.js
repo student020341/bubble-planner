@@ -59,6 +59,12 @@ class CanvasView {
         /** @type {{x: number, y: number}} */
         this.dragOffset = { x: 0, y: 0 };
 
+        /** @type {number} Snap grid size in pixels */
+        this.snapGridSize = 40;
+
+        /** @type {boolean} Whether snapping is always active without holding shift */
+        this.alwaysSnapToGrid = false;
+
         /** @type {{x: number, y: number}} */
         this.lastMousePos = { x: 0, y: 0 };
 
@@ -309,8 +315,15 @@ class CanvasView {
         if (this.mode === "dragging_node" && this.selectedNode) {
             if (window.uiController) window.uiController.closePropertyQuickFilter();
             const worldPos = this.camera.screenToWorld(e.clientX, e.clientY);
-            this.selectedNode.x = worldPos.x + this.dragOffset.x;
-            this.selectedNode.y = worldPos.y + this.dragOffset.y;
+            let targetX = worldPos.x + this.dragOffset.x;
+            let targetY = worldPos.y + this.dragOffset.y;
+            const shouldSnap = this.alwaysSnapToGrid ? !e.shiftKey : e.shiftKey;
+            if (shouldSnap && this.snapGridSize > 0) {
+                targetX = Math.round(targetX / this.snapGridSize) * this.snapGridSize;
+                targetY = Math.round(targetY / this.snapGridSize) * this.snapGridSize;
+            }
+            this.selectedNode.x = targetX;
+            this.selectedNode.y = targetY;
             this.camera.updateBounds(this.store.getVisibleNodes());
             return;
         }

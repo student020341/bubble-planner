@@ -34,20 +34,30 @@ class ActionRegistry {
             ["canvas:dblclick", "createBubble"],
             ["Escape", "drillUp"],
             ["KeyI", "inspectEntity"],
+            ["Ctrl+Space", "openCommandPalette"],
+            ["KeyJ", "openJumpPalette"],
+            ["Ctrl+KeyK", "openJumpPalette"],
             ["KeyP", "togglePropertyFilter"],
             ["KeyE", "editLabel"],
             ["KeyL", "editLabel"],
             ["Delete", "deleteSelection"],
-            ["Backspace", "deleteSelection"]
+            ["Backspace", "deleteSelection"],
+            ["Ctrl+Comma", "openSettings"]
         ];
 
-        /** @type {Map<string, string>} Active Trigger -> Action ID mapping */
-        this.bindings = new Map(this.defaultBindings);
+        /** @type {Map<string, string[]>} Active Trigger -> Array of Action IDs */
+        this.bindings = new Map();
+        for (const [trigger, actionId] of this.defaultBindings) {
+            this.bind(trigger, actionId);
+        }
     }
 
     /** Reset bindings back to default configuration */
     restoreDefaults() {
-        this.bindings = new Map(this.defaultBindings);
+        this.bindings = new Map();
+        for (const [trigger, actionId] of this.defaultBindings) {
+            this.bind(trigger, actionId);
+        }
     }
 
     /**
@@ -64,15 +74,75 @@ class ActionRegistry {
      * @param {string} actionId
      */
     bind(trigger, actionId) {
-        this.bindings.set(trigger, actionId);
+        let list = this.bindings.get(trigger);
+        if (!list) {
+            list = [];
+            this.bindings.set(trigger, list);
+        } else if (!Array.isArray(list)) {
+            list = [list];
+            this.bindings.set(trigger, list);
+        }
+        if (!list.includes(actionId)) {
+            list.push(actionId);
+        }
     }
 
     /**
-     * Unbind an input trigger.
+     * Unbind an input trigger from an action ID.
      * @param {string} trigger
+     * @param {string} [actionId]
      */
-    unbind(trigger) {
-        this.bindings.delete(trigger);
+    unbind(trigger, actionId = null) {
+        if (!actionId) {
+            this.bindings.delete(trigger);
+            return;
+        }
+        let list = this.bindings.get(trigger);
+        if (Array.isArray(list)) {
+            list = list.filter(id => id !== actionId);
+            if (list.length === 0) {
+                this.bindings.delete(trigger);
+            } else {
+                this.bindings.set(trigger, list);
+            }
+        } else {
+            this.bindings.delete(trigger);
+        }
+    }
+
+    /**
+     * Get all triggers bound to a specific action.
+     * @param {string} actionId
+     * @returns {string[]}
+     */
+    getTriggersForAction(actionId) {
+        const triggers = [];
+        for (const [trigger, val] of this.bindings.entries()) {
+            const list = Array.isArray(val) ? val : [val];
+            if (list.includes(actionId)) {
+                triggers.push(trigger);
+            }
+        }
+        return triggers;
+    }
+
+    /**
+     * Detect triggers that are shared across multiple actions.
+     * @returns {Map<string, string[]>} Trigger -> Array of conflicting action titles
+     */
+    detectConflicts() {
+        const conflicts = new Map();
+        for (const [trigger, val] of this.bindings.entries()) {
+            const actionIds = Array.isArray(val) ? val : [val];
+            if (actionIds.length > 1) {
+                const titles = actionIds.map(id => {
+                    const act = this.actions.get(id);
+                    return act ? act.title : id;
+                });
+                conflicts.set(trigger, titles);
+            }
+        }
+        return conflicts;
     }
 
     /**
@@ -90,15 +160,87 @@ class ActionRegistry {
     }
 
     /**
-     * Trigger an action bound to an input event / trigger string.
+     * Trigger an action bound to an input event / trigger string or sequence string.
      * @param {string} trigger
      * @param {ActionContext} context
      * @returns {boolean}
      */
     trigger(trigger, context) {
-        const actionId = this.bindings.get(trigger);
-        if (!actionId) return false;
-        return this.execute(actionId, context);
+        if (!trigger) return false;
+        // 1. Direct exact lookup
+        let val = this.bindings.get(trigger);
+
+        // 2. Fallback: normalized case-insensitive match (for sequences or variations)
+        if (!val) {
+            const inputSteps = ActionRegistry.splitTrigger(trigger);
+            for (const [key, actVal] of this.bindings.entries()) {
+                const boundSteps = ActionRegistry.splitTrigger(key);
+                if (boundSteps.length === inputSteps.length) {
+                    let match = true;
+                    for (let i = 0; i < boundSteps.length; i++) {
+                        if (boundSteps[i].toLowerCase() !== inputSteps[i].toLowerCase()) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        val = actVal;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!val) return false;
+        const actionIds = Array.isArray(val) ? val : [val];
+        for (const actionId of actionIds) {
+            if (this.execute(actionId, context)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+
+    /**
+     * Splits a trigger string into sequential steps.
+     * Sequences can be separated by spaces or ' > ' (e.g. 'KeyB KeyN', 'B > N').
+     * Single chord combinations like 'Ctrl+KeyK' remain 1 step.
+     * @param {string} trigger
+     * @returns {string[]}
+     */
+    static splitTrigger(trigger) {
+        if (!trigger) return [];
+        if (trigger.includes(" > ")) {
+            return trigger.split(" > ").map(s => s.trim()).filter(Boolean);
+        }
+        if (trigger.includes(" ")) {
+            return trigger.split(/\s+/).map(s => s.trim()).filter(Boolean);
+        }
+        return [trigger.trim()];
+    }
+
+    /**
+     * Checks if any registered trigger sequence starts with the given prefix steps.
+     * @param {string[]} prefixSteps
+     * @returns {boolean}
+     */
+    hasSequencePrefix(prefixSteps) {
+        if (!prefixSteps || prefixSteps.length === 0) return false;
+        for (const trigger of this.bindings.keys()) {
+            const steps = ActionRegistry.splitTrigger(trigger);
+            if (steps.length > prefixSteps.length) {
+                let match = true;
+                for (let i = 0; i < prefixSteps.length; i++) {
+                    if (steps[i].toLowerCase() !== prefixSteps[i].toLowerCase()) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -109,3 +251,4 @@ class ActionRegistry {
         return Array.from(this.actions.values());
     }
 }
+

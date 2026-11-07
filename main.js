@@ -30,9 +30,10 @@ camera.onTransformChange = () => {
 
 actionRegistry.register({
     id: "jumpToLayer",
-    title: "Jump To Layer",
-    description: "Navigate directly to a specific ancestor bubble layer or root",
+    title: "Jump to Root",
+    description: "Navigate directly up to the root level",
     target: "global",
+    isEnabled: () => store.currentParentId !== null,
     execute: (ctx) => {
         store.currentParentId = ctx.targetParentId !== undefined ? ctx.targetParentId : null;
         store.notify();
@@ -40,6 +41,37 @@ actionRegistry.register({
         camera.fitToNodes(store.getVisibleNodes());
     }
 });
+
+actionRegistry.register({
+    id: "openJumpPalette",
+    title: "Jump to Bubble / Layer",
+    description: "Open search palette to quickly jump to any bubble across all layers",
+    target: "global",
+    execute: () => {
+        uiController.toggleJumpPalette();
+    }
+});
+
+actionRegistry.register({
+    id: "openCommandPalette",
+    title: "Command Palette",
+    description: "Search and execute all editor actions and tools",
+    target: "global",
+    execute: () => {
+        uiController.toggleCommandPalette();
+    }
+});
+
+actionRegistry.register({
+    id: "openSettings",
+    title: "Open Settings / System Menu",
+    description: "Open system settings drawer for keybindings, data types, and preferences",
+    target: "global",
+    execute: () => {
+        uiController.toggleSettings();
+    }
+});
+
 
 actionRegistry.register({
     id: "inspectEntity",
@@ -152,14 +184,67 @@ actionRegistry.register({
 
 // --- Keyboard Event Router ---
 
+// Helper to build canonical key combination string (e.g., 'Shift+KeyI', 'Ctrl+KeyK', 'Ctrl+Space')
+function buildKeyCombo(e) {
+    const parts = [];
+    if (e.ctrlKey) parts.push("Ctrl");
+    if (e.altKey) parts.push("Alt");
+    if (e.shiftKey) parts.push("Shift");
+    if (e.metaKey) parts.push("Meta");
+
+    const code = e.code;
+    const isModifier = ["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"].includes(code);
+    if (!isModifier) {
+        const keyName = code.startsWith("Key") ? code : (code === "Space" ? "Space" : (code.startsWith("Digit") ? code : e.key));
+        parts.push(keyName);
+    }
+    return parts.length > 0 ? parts.join("+") : null;
+}
+
+// Active sequence buffer for Vim-style leader key shortcuts
+let pendingSequence = [];
+
 window.addEventListener("keydown", (e) => {
-    // Priority: If Escape is pressed, let UIController dismiss the topmost open overlay/drawer
+    // 1. If a sequence is pending and Escape is pressed, cancel the sequence immediately
+    if (e.key === "Escape" && pendingSequence.length > 0) {
+        pendingSequence = [];
+        uiController.hideSequenceHUD();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+    }
+
+    // 2. Priority: If Escape is pressed with no pending sequence, let UIController dismiss topmost overlay/drawer
     if (e.key === "Escape") {
         if (uiController.handleEscape()) {
             e.preventDefault();
             e.stopPropagation();
             return;
         }
+    }
+
+    // Global Command Palette shortcut (Ctrl+Space or Cmd+Space)
+    if ((e.ctrlKey || e.metaKey) && (e.code === "Space" || e.key === " ")) {
+        if (pendingSequence.length > 0) {
+            pendingSequence = [];
+            uiController.hideSequenceHUD();
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        uiController.toggleCommandPalette();
+        return;
+    }
+
+    // Global Jump Palette shortcut (Ctrl+K or Cmd+K)
+    if ((e.ctrlKey || e.metaKey) && (e.code === "KeyK" || e.key === "k" || e.key === "K")) {
+        if (pendingSequence.length > 0) {
+            pendingSequence = [];
+            uiController.hideSequenceHUD();
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        uiController.toggleJumpPalette();
+        return;
     }
 
     // Ignore key shortcuts if user is typing in an input, textarea, select, or drawer element
@@ -173,6 +258,10 @@ window.addEventListener("keydown", (e) => {
     );
 
     if (isEditing) {
+        if (pendingSequence.length > 0) {
+            pendingSequence = [];
+            uiController.hideSequenceHUD();
+        }
         return;
     }
 
@@ -185,12 +274,63 @@ window.addEventListener("keydown", (e) => {
         originalEvent: e
     };
 
-    // Try triggering by key code (e.g. 'KeyE') or key name (e.g. 'Escape', 'Delete')
-    const handled = actionRegistry.trigger(e.code, context) || actionRegistry.trigger(e.key, context);
+    // Ignore bare modifier keydown events (Shift, Control, Alt, Meta)
+    const isModifier = ["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"].includes(e.code);
+    if (isModifier) {
+        return;
+    }
+
+    const combo = buildKeyCombo(e);
+    const keyStep = e.code.startsWith("Key") ? e.code : (e.code === "Space" ? "Space" : (e.code.startsWith("Digit") ? e.code : e.key));
+
+    // A. If a sequence is already in progress:
+    if (pendingSequence.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const candidateSeq = [...pendingSequence, keyStep];
+        const candidateStr = candidateSeq.join(" ");
+
+        // Check if candidateSeq completes an action
+        if (actionRegistry.trigger(candidateStr, context)) {
+            pendingSequence = [];
+            uiController.hideSequenceHUD();
+            return;
+        }
+
+        // Check if candidateSeq is still a valid prefix for an even longer sequence
+        if (actionRegistry.hasSequencePrefix(candidateSeq)) {
+            pendingSequence = candidateSeq;
+            uiController.showSequenceHUD(pendingSequence);
+            return;
+        }
+
+        // Neither completed nor valid prefix -> cancel sequence
+        pendingSequence = [];
+        uiController.hideSequenceHUD();
+        return;
+    }
+
+    // B. If no sequence is active, check if pressing this key starts a registered sequence
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (actionRegistry.hasSequencePrefix([keyStep])) {
+            e.preventDefault();
+            e.stopPropagation();
+            pendingSequence = [keyStep];
+            uiController.showSequenceHUD(pendingSequence);
+            return;
+        }
+    }
+
+    // C. Otherwise, trigger standard single key or modifier combo (e.g. 'Shift+KeyI', 'Ctrl+KeyK')
+    const handled = (combo && actionRegistry.trigger(combo, context)) ||
+                    actionRegistry.trigger(e.code, context) ||
+                    actionRegistry.trigger(e.key, context);
     if (handled) {
         e.preventDefault();
     }
 });
+
 
 // Main Loop logic and render
 const logic = (dt) => {
@@ -209,18 +349,31 @@ async function bootPersistence() {
     try {
         await db.init();
 
-        // 1. Load project document
-        const hasLoadedDoc = await store.loadProject();
+        // 1. Resolve active project
+        const activeId = await store.getActiveProjectId();
+        const list = await store.listProjects();
+        const activeMeta = list.find(p => p.id === activeId) || list[0];
+        store.projectId = activeMeta.id;
+        store.projectName = activeMeta.name;
+
+        // 2. Load project document
+        const hasLoadedDoc = await store.loadProject(store.projectId);
         if (!hasLoadedDoc) {
             // Seed project for the first time
             await store.saveProject();
         }
 
-        // 2. Load user settings (preferences, custom keybindings)
+        // 3. Load user settings (preferences, custom keybindings)
         const savedSettings = await db.get("user_settings");
         if (savedSettings) {
             if (savedSettings.bindings) {
-                actionRegistry.bindings = new Map(savedSettings.bindings);
+                actionRegistry.bindings = new Map();
+                for (const [trigger, val] of savedSettings.bindings) {
+                    const actionIds = Array.isArray(val) ? val : [val];
+                    for (const id of actionIds) {
+                        actionRegistry.bind(trigger, id);
+                    }
+                }
             }
             if (savedSettings.autoOpenInspector !== undefined) {
                 uiController.autoOpenInspector = savedSettings.autoOpenInspector;
@@ -230,6 +383,12 @@ async function bootPersistence() {
             }
             if (savedSettings.dragThreshold !== undefined) {
                 canvasView.dragThreshold = savedSettings.dragThreshold;
+            }
+            if (savedSettings.snapGridSize !== undefined) {
+                canvasView.snapGridSize = savedSettings.snapGridSize;
+            }
+            if (savedSettings.alwaysSnapToGrid !== undefined) {
+                canvasView.alwaysSnapToGrid = savedSettings.alwaysSnapToGrid;
             }
         }
 

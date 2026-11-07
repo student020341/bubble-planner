@@ -12,6 +12,8 @@ class ProjectStore {
 
         /** @type {string} */
         this.projectId = "default";
+        /** @type {string} */
+        this.projectName = "Postal Service Demo";
 
         /** @type {ProjectDocument} Seeded with initial mock data for immediate UI testing */
         this.doc = {
@@ -263,12 +265,54 @@ class ProjectStore {
     }
 
     /**
+     * Fetch list of all project metadata records.
+     * @returns {Promise<Array<{ id: string, name: string, updatedAt: number }>>}
+     */
+    async listProjects() {
+        if (!this.db) return [{ id: "default", name: "Postal Service Demo", updatedAt: Date.now() }];
+        const list = await this.db.get("projects_meta");
+        if (Array.isArray(list) && list.length > 0) {
+            return list;
+        }
+        // Initialize default record
+        const defaultList = [{ id: "default", name: "Postal Service Demo", updatedAt: Date.now() }];
+        await this.db.set("projects_meta", defaultList);
+        return defaultList;
+    }
+
+    /**
+     * Save updated project metadata list.
+     * @param {Array<{ id: string, name: string, updatedAt: number }>} list
+     * @returns {Promise<void>}
+     */
+    async saveProjectsList(list) {
+        if (!this.db) return;
+        await this.db.set("projects_meta", list);
+    }
+
+    /**
+     * Get ID of active project.
+     * @returns {Promise<string>}
+     */
+    async getActiveProjectId() {
+        if (!this.db) return "default";
+        const id = await this.db.get("active_project_id");
+        return id || "default";
+    }
+
+    /**
      * Save active project to IndexedDB.
      * @returns {Promise<void>}
      */
     async saveProject() {
         if (!this.db) return;
         await this.db.set("project_" + this.projectId, this.doc);
+        const list = await this.listProjects();
+        const p = list.find(item => item.id === this.projectId);
+        if (p) {
+            p.updatedAt = Date.now();
+            await this.saveProjectsList(list);
+        }
     }
 
     /**
@@ -316,6 +360,204 @@ class ProjectStore {
             return true;
         }
         return false;
+    }
+
+    /**
+     * Switch active project, saving current state first.
+     * @param {string} projectId
+     * @param {Camera} [camera]
+     * @returns {Promise<boolean>}
+     */
+    async switchProject(projectId, camera = null) {
+        if (!this.db) return false;
+
+        // 1. Flush any pending saves for current project
+        if (this._saveTimeout) {
+            clearTimeout(this._saveTimeout);
+            this._saveTimeout = null;
+            await this.saveProject();
+        }
+        if (this._viewStateTimeout && camera) {
+            clearTimeout(this._viewStateTimeout);
+            this._viewStateTimeout = null;
+            await this.saveViewState(camera);
+        }
+
+        // 2. Set new active project
+        this.projectId = projectId;
+        await this.db.set("active_project_id", projectId);
+
+        // Update active project name in store
+        const list = await this.listProjects();
+        const meta = list.find(p => p.id === projectId);
+        this.projectName = meta ? meta.name : "Untitled Project";
+
+        // 3. Load document
+        const loaded = await this.loadProject(projectId);
+        if (!loaded) {
+            // Seed blank if doc didn't exist
+            this.doc = {
+                lastNodeId: 1,
+                lastRelId: 0,
+                types: ["text", "number"],
+                nodes: [
+                    { id: 1, parentId: null, label: this.projectName, description: "", x: 400, y: 300, properties: {} }
+                ],
+                relationships: []
+            };
+            await this.saveProject();
+        }
+
+        // 4. Restore view state
+        const savedViewState = await this.db.get("view_state_" + projectId);
+        let restoredCamera = false;
+        if (savedViewState) {
+            if (savedViewState.currentParentId !== undefined) {
+                const layerExists = savedViewState.currentParentId === null || 
+                                    this.doc.nodes.some(n => n.id === savedViewState.currentParentId);
+                this.currentParentId = layerExists ? savedViewState.currentParentId : null;
+            } else {
+                this.currentParentId = null;
+            }
+
+            if (camera && savedViewState.camera && typeof savedViewState.camera.zoom === "number") {
+                camera.x = savedViewState.camera.x;
+                camera.y = savedViewState.camera.y;
+                camera.zoom = savedViewState.camera.zoom;
+                restoredCamera = true;
+            }
+        } else {
+            this.currentParentId = null;
+        }
+
+        if (camera && !restoredCamera) {
+            camera.fitToNodes(this.getVisibleNodes());
+        }
+
+        this.notify();
+        return true;
+    }
+
+    /**
+     * Create a new project document and switch to it.
+     * @param {string} name
+     * @param {Camera} [camera]
+     * @returns {Promise<string>} Created project ID
+     */
+    async createProject(name = "New Project", camera = null) {
+        const id = "proj_" + Date.now();
+        const trimmedName = name.trim() || "New Project";
+        const newDoc = {
+            lastNodeId: 1,
+            lastRelId: 0,
+            types: ["text", "number"],
+            nodes: [
+                { id: 1, parentId: null, label: trimmedName, description: "", x: 400, y: 300, properties: {} }
+            ],
+            relationships: []
+        };
+
+        if (this.db) {
+            await this.db.set("project_" + id, newDoc);
+            const list = await this.listProjects();
+            list.push({ id, name: trimmedName, updatedAt: Date.now() });
+            await this.saveProjectsList(list);
+            await this.switchProject(id, camera);
+        } else {
+            this.projectId = id;
+            this.projectName = trimmedName;
+            this.doc = newDoc;
+            this.currentParentId = null;
+            if (camera) camera.fitToNodes(this.getVisibleNodes());
+            this.notify();
+        }
+
+        return id;
+    }
+
+    /**
+     * Rename an existing project.
+     * @param {string} projectId
+     * @param {string} newName
+     * @returns {Promise<void>}
+     */
+    async renameProject(projectId, newName) {
+        const trimmed = newName.trim() || "Untitled Project";
+        if (this.db) {
+            const list = await this.listProjects();
+            const meta = list.find(p => p.id === projectId);
+            if (meta) {
+                meta.name = trimmed;
+                meta.updatedAt = Date.now();
+                await this.saveProjectsList(list);
+            }
+        }
+        if (this.projectId === projectId) {
+            this.projectName = trimmed;
+        }
+        this.notify();
+    }
+
+    /**
+     * Duplicate an existing project.
+     * @param {string} projectId
+     * @param {Camera} [camera]
+     * @returns {Promise<string>}
+     */
+    async duplicateProject(projectId, camera = null) {
+        const list = await this.listProjects();
+        const sourceMeta = list.find(p => p.id === projectId);
+        const baseName = sourceMeta ? sourceMeta.name : "Project";
+        const newName = `${baseName} (Copy)`;
+        const newId = "proj_" + Date.now();
+
+        let docToClone = null;
+        if (projectId === this.projectId) {
+            docToClone = JSON.parse(JSON.stringify(this.doc));
+        } else if (this.db) {
+            docToClone = await this.db.get("project_" + projectId);
+        }
+        if (!docToClone) {
+            docToClone = JSON.parse(JSON.stringify(this.doc));
+        }
+
+        if (this.db) {
+            await this.db.set("project_" + newId, docToClone);
+            list.push({ id: newId, name: newName, updatedAt: Date.now() });
+            await this.saveProjectsList(list);
+            await this.switchProject(newId, camera);
+        }
+
+        return newId;
+    }
+
+    /**
+     * Delete a project and switch to another one if it was active.
+     * @param {string} projectId
+     * @param {Camera} [camera]
+     * @returns {Promise<void>}
+     */
+    async deleteProject(projectId, camera = null) {
+        if (!this.db) return;
+
+        const list = await this.listProjects();
+        // If it's the last remaining project, create a fresh one first
+        if (list.length <= 1) {
+            await this.createProject("Untitled Project", camera);
+            return this.deleteProject(projectId, camera);
+        }
+
+        const remaining = list.filter(p => p.id !== projectId);
+        await this.saveProjectsList(remaining);
+        await this.db.delete("project_" + projectId);
+        await this.db.delete("view_state_" + projectId);
+
+        if (this.projectId === projectId) {
+            const nextProj = remaining[remaining.length - 1];
+            await this.switchProject(nextProj.id, camera);
+        } else {
+            this.notify();
+        }
     }
 
     /**

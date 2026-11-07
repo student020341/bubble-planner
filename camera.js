@@ -108,8 +108,8 @@ class Camera {
      */
     fitToNodes(nodes = []) {
         if (!nodes || nodes.length === 0) {
-            this.x = 400;
-            this.y = 300;
+            this.x = 0;
+            this.y = 0;
             this.zoom = 1;
             if (this.onTransformChange) this.onTransformChange();
             return;
