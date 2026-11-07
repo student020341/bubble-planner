@@ -775,6 +775,13 @@ class UIController {
 
         // Close dropdowns and overlays when clicking outside
         window.addEventListener("mousedown", (e) => {
+            // Close dialog modal when clicking outside
+            if (this.isDialogOpen && this.dialogModal) {
+                if (!this.dialogModal.contains(e.target)) {
+                    this.closeDialog(false);
+                }
+            }
+
             // Close guide modal when clicking outside
             if (this.isGuideModalOpen && this.guideModal) {
                 if (!this.guideModal.contains(e.target)) {
@@ -864,22 +871,39 @@ class UIController {
         }
     }
 
-    openPropertyQuickFilter(node) {
-        if (!node) return;
-        this.activeFilterNode = node;
+    openPropertyQuickFilter(entity) {
+        if (!entity) return;
+        this.activeFilterNode = entity;
 
-        const screenPos = this.camera.worldToScreen(node.x, node.y);
-        const m = this.canvasView.computeNodeMetrics(node);
+        const isNode = entity.hasOwnProperty("x");
         const cardWidth = 260;
+        let left, top;
 
-        let left = Math.round(screenPos.x - cardWidth / 2);
-        let top = Math.round(screenPos.y + (m.height / 2) * this.camera.zoom + 12);
+        if (isNode) {
+            const screenPos = this.camera.worldToScreen(entity.x, entity.y);
+            const m = this.canvasView.computeNodeMetrics(entity);
+            left = Math.round(screenPos.x - cardWidth / 2);
+            top = Math.round(screenPos.y + (m.height / 2) * this.camera.zoom + 12);
+        } else {
+            const center = this.canvasView.getRelationshipPillCenter(entity);
+            const screenPos = this.camera.worldToScreen(center.x, center.y);
+            left = Math.round(screenPos.x - cardWidth / 2);
+            top = Math.round(screenPos.y + (center.h / 2) * this.camera.zoom + 12);
+        }
 
         // Clamp to screen bounds so it's always in view
         const margin = 12;
         left = Math.max(margin, Math.min(window.innerWidth - cardWidth - margin, left));
         if (top + 240 > window.innerHeight) {
-            top = Math.round(screenPos.y - (m.height / 2) * this.camera.zoom - 240);
+            if (isNode) {
+                const screenPos = this.camera.worldToScreen(entity.x, entity.y);
+                const m = this.canvasView.computeNodeMetrics(entity);
+                top = Math.round(screenPos.y - (m.height / 2) * this.camera.zoom - 240);
+            } else {
+                const center = this.canvasView.getRelationshipPillCenter(entity);
+                const screenPos = this.camera.worldToScreen(center.x, center.y);
+                top = Math.round(screenPos.y - (center.h / 2) * this.camera.zoom - 240);
+            }
             top = Math.max(margin, top);
         }
 
@@ -907,13 +931,15 @@ class UIController {
         const node = this.activeFilterNode;
         if (!node.properties) node.properties = {};
 
+        const isNode = node.hasOwnProperty("x");
+
         // Top Row: Filter Search Input + Floating "+ Add" Action Button
         const topRow = document.createElement("div");
         topRow.style.cssText = "display: flex; align-items: center; gap: 6px;";
 
         const searchInput = document.createElement("input");
         searchInput.type = "text";
-        searchInput.placeholder = "Filter properties...";
+        searchInput.placeholder = isNode ? "Filter bubble properties..." : "Filter action properties...";
         searchInput.style.cssText = `
             flex: 1;
             min-width: 0;
@@ -949,7 +975,7 @@ class UIController {
         // Floating Action: "+ Add" button
         const addBtn = document.createElement("button");
         addBtn.innerHTML = "+ Add";
-        addBtn.title = "Add a new property to this bubble";
+        addBtn.title = isNode ? "Add a new property to this bubble" : "Add a new property to this action";
         addBtn.style.cssText = `
             flex-shrink: 0;
             background: rgba(168, 85, 247, 0.2);
@@ -997,7 +1023,7 @@ class UIController {
 
             if (filtered.length === 0) {
                 const empty = document.createElement("div");
-                empty.textContent = allProps.length === 0 ? "No properties on bubble" : "No matching properties";
+                empty.textContent = allProps.length === 0 ? (isNode ? "No properties on bubble" : "No properties on action") : "No matching properties";
                 empty.style.cssText = "font-size: 11px; color: #64748b; font-style: italic; padding: 4px;";
                 tableContainer.appendChild(empty);
                 return;
@@ -2351,9 +2377,17 @@ class UIController {
             delRelBtn.style.cssText = "background: transparent; border: none; color: #94a3b8; font-size: 12px; cursor: pointer; padding: 2px 4px;";
             delRelBtn.addEventListener("mouseenter", () => delRelBtn.style.color = "#f43f5e");
             delRelBtn.addEventListener("mouseleave", () => delRelBtn.style.color = "#94a3b8");
-            delRelBtn.addEventListener("click", () => {
-                this.store.removeRelationship(rel.id);
-                this.renderInspectorContent();
+            delRelBtn.addEventListener("click", async () => {
+                const confirmed = await this.customConfirm(
+                    `Delete action "${rel.label}"?`,
+                    "Delete Action",
+                    true,
+                    "Delete"
+                );
+                if (confirmed) {
+                    this.store.removeRelationship(rel.id);
+                    this.renderInspectorContent();
+                }
             });
             btnGroup.appendChild(delRelBtn);
 
@@ -2938,6 +2972,8 @@ class UIController {
         const interactionOptions = [
             { label: "Double-click Node", value: "node:dblclick" },
             { label: "Click Node", value: "node:click" },
+            { label: "Double-click Action", value: "relationship:dblclick" },
+            { label: "Click Action", value: "relationship:click" },
             { label: "Double-click Canvas", value: "canvas:dblclick" },
             { label: "Click Canvas", value: "canvas:click" }
         ];
@@ -3439,18 +3475,8 @@ class UIController {
         exportOutlineBtn.style.cssText = btnStyle;
         exportOutlineBtn.addEventListener("mouseenter", () => exportOutlineBtn.style.background = "rgba(168, 85, 247, 0.15)");
         exportOutlineBtn.addEventListener("mouseleave", () => exportOutlineBtn.style.background = "rgba(30, 41, 59, 0.8)");
-        exportOutlineBtn.addEventListener("click", () => this.openImportExportModal("export"));
+        exportOutlineBtn.addEventListener("click", () => this.openExportOutlineModal());
         grid.appendChild(exportOutlineBtn);
-
-        // 4. Import Outline button
-        const importOutlineBtn = document.createElement("button");
-        importOutlineBtn.innerHTML = "📝 Import Outline";
-        importOutlineBtn.title = "Import/paste tab-indented hierarchical outline";
-        importOutlineBtn.style.cssText = btnStyle;
-        importOutlineBtn.addEventListener("mouseenter", () => importOutlineBtn.style.background = "rgba(168, 85, 247, 0.15)");
-        importOutlineBtn.addEventListener("mouseleave", () => importOutlineBtn.style.background = "rgba(30, 41, 59, 0.8)");
-        importOutlineBtn.addEventListener("click", () => this.openImportExportModal("import"));
-        grid.appendChild(importOutlineBtn);
 
         panel.appendChild(grid);
         return panel;
@@ -3505,10 +3531,9 @@ class UIController {
     }
 
     /**
-     * Open interactive Outline Import/Export modal.
-     * @param {"export"|"import"} mode
+     * Open interactive Outline Export modal.
      */
-    openImportExportModal(mode = "export") {
+    openExportOutlineModal() {
         if (!this.importExportModal) return;
         this.isImportExportModalOpen = true;
         this.pushOverlay("importExport");
@@ -3520,7 +3545,7 @@ class UIController {
         header.style.cssText = "display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(51, 65, 85, 0.8); padding-bottom: 8px;";
 
         const title = document.createElement("h3");
-        title.textContent = mode === "export" ? "📋 Export Project Outline" : "📝 Import Project Outline";
+        title.textContent = "📋 Export Project Outline";
         title.style.cssText = "margin: 0; font-size: 15px; font-weight: 600; color: #f1f5f9;";
         header.appendChild(title);
 
@@ -3534,9 +3559,7 @@ class UIController {
         // Description
         const desc = document.createElement("p");
         desc.style.cssText = "margin: 0; font-size: 12px; color: #94a3b8; line-height: 1.4;";
-        desc.textContent = mode === "export"
-            ? "Token-lean tab-indented hierarchy of all bubbles, custom properties, and directional connections. Copy or save to use with LLMs or notes."
-            : "Paste a tab-indented outline text below. Existing nodes in this project will be replaced with the parsed hierarchy.";
+        desc.textContent = "Token-lean tab-indented hierarchy of all bubbles, custom properties, and directional connections. Copy or save to use with LLMs or notes.";
         this.importExportModal.appendChild(desc);
 
         // Textarea
@@ -3556,104 +3579,65 @@ class UIController {
             outline: none;
             tab-size: 4;
         `;
-        if (mode === "export") {
-            textarea.value = this.store.exportOutline();
-            textarea.readOnly = true;
-        } else {
-            textarea.placeholder = "Postal Service\n\t_properties\n\t\thq: text\n\tPost Office\n\tMail Truck\n\t\t_rels\n\t\t\tCustomer Location: delivery\n\tCustomer Location\n\t\t^sub detail node";
-        }
+        textarea.value = this.store.exportOutline();
+        textarea.readOnly = true;
         this.importExportModal.appendChild(textarea);
 
         // Footer Actions
         const footer = document.createElement("div");
         footer.style.cssText = "display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 4px;";
 
-        if (mode === "export") {
-            const copyBtn = document.createElement("button");
-            copyBtn.textContent = "📋 Copy to Clipboard";
-            copyBtn.style.cssText = `
-                background: rgba(56, 189, 248, 0.2);
-                border: 1px solid rgba(56, 189, 248, 0.5);
-                color: #38bdf8;
-                border-radius: 6px;
-                padding: 6px 14px;
-                font-size: 12px;
-                font-weight: 600;
-                cursor: pointer;
-            `;
-            copyBtn.addEventListener("click", async () => {
-                try {
-                    await navigator.clipboard.writeText(textarea.value);
-                    copyBtn.textContent = "✓ Copied!";
-                    setTimeout(() => { copyBtn.textContent = "📋 Copy to Clipboard"; }, 1500);
-                } catch {
-                    textarea.select();
-                    document.execCommand("copy");
-                    copyBtn.textContent = "✓ Copied!";
-                    setTimeout(() => { copyBtn.textContent = "📋 Copy to Clipboard"; }, 1500);
-                }
-            });
-            footer.appendChild(copyBtn);
+        const copyBtn = document.createElement("button");
+        copyBtn.textContent = "📋 Copy to Clipboard";
+        copyBtn.style.cssText = `
+            background: rgba(56, 189, 248, 0.2);
+            border: 1px solid rgba(56, 189, 248, 0.5);
+            color: #38bdf8;
+            border-radius: 6px;
+            padding: 6px 14px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+        `;
+        copyBtn.addEventListener("click", async () => {
+            try {
+                await navigator.clipboard.writeText(textarea.value);
+                copyBtn.textContent = "✓ Copied!";
+                setTimeout(() => { copyBtn.textContent = "📋 Copy to Clipboard"; }, 1500);
+            } catch {
+                textarea.select();
+                document.execCommand("copy");
+                copyBtn.textContent = "✓ Copied!";
+                setTimeout(() => { copyBtn.textContent = "📋 Copy to Clipboard"; }, 1500);
+            }
+        });
+        footer.appendChild(copyBtn);
 
-            const downloadOutlineBtn = document.createElement("button");
-            downloadOutlineBtn.textContent = "💾 Download .txt";
-            downloadOutlineBtn.style.cssText = `
-                background: rgba(30, 41, 59, 0.8);
-                border: 1px solid rgba(51, 65, 85, 0.8);
-                color: #cbd5e1;
-                border-radius: 6px;
-                padding: 6px 14px;
-                font-size: 12px;
-                font-weight: 500;
-                cursor: pointer;
-            `;
-            downloadOutlineBtn.addEventListener("click", () => {
-                const safeName = (this.store.projectName || "project").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
-                const blob = new Blob([textarea.value], { type: "text/plain" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = `${safeName}-outline.txt`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-            });
-            footer.appendChild(downloadOutlineBtn);
-        } else {
-            const applyBtn = document.createElement("button");
-            applyBtn.textContent = "Import & Replace Active Project";
-            applyBtn.style.cssText = `
-                background: rgba(168, 85, 247, 0.25);
-                border: 1px solid rgba(168, 85, 247, 0.6);
-                color: #c084fc;
-                border-radius: 6px;
-                padding: 6px 14px;
-                font-size: 12px;
-                font-weight: 600;
-                cursor: pointer;
-            `;
-            applyBtn.addEventListener("click", async () => {
-                if (!textarea.value.trim()) {
-                    await this.customAlert("Please enter outline text first.", "Import Outline");
-                    return;
-                }
-                const confirmed = await this.customConfirm(
-                    "Replace current project contents with this outline?",
-                    "Confirm Import",
-                    true,
-                    "Replace & Import"
-                );
-                if (confirmed) {
-                    this.store.importOutline(textarea.value);
-                    if (this.camera) {
-                        this.camera.fitToNodes(this.store.getVisibleNodes());
-                    }
-                    this.closeImportExportModal();
-                }
-            });
-            footer.appendChild(applyBtn);
-        }
+        const downloadOutlineBtn = document.createElement("button");
+        downloadOutlineBtn.textContent = "💾 Download .txt";
+        downloadOutlineBtn.style.cssText = `
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.8);
+            color: #cbd5e1;
+            border-radius: 6px;
+            padding: 6px 14px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+        `;
+        downloadOutlineBtn.addEventListener("click", () => {
+            const safeName = (this.store.projectName || "project").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+            const blob = new Blob([textarea.value], { type: "text/plain" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `${safeName}-outline.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+        footer.appendChild(downloadOutlineBtn);
 
         const cancelBtn = document.createElement("button");
         cancelBtn.textContent = "Close";
@@ -3671,6 +3655,11 @@ class UIController {
 
         this.importExportModal.appendChild(footer);
         setTimeout(() => textarea.focus(), 30);
+    }
+
+    /** Compatibility alias */
+    openImportExportModal(mode = "export") {
+        this.openExportOutlineModal();
     }
 
     /** Close interactive Outline Import/Export modal */
@@ -3891,6 +3880,67 @@ class UIController {
             this.dialogModal.style.display = "flex";
             this.dialogModal.innerHTML = "";
 
+            let cleanupKeyHandler = null;
+
+            const finish = (result) => {
+                if (cleanupKeyHandler) {
+                    cleanupKeyHandler();
+                    cleanupKeyHandler = null;
+                }
+                this._dialogCleanup = null;
+                this._dialogResolve = null;
+                this.closeDialog(result);
+                resolve(result);
+            };
+
+            this._dialogCleanup = () => {
+                if (cleanupKeyHandler) {
+                    cleanupKeyHandler();
+                    cleanupKeyHandler = null;
+                }
+            };
+            this._dialogResolve = (val) => {
+                resolve(val);
+            };
+
+            // Keyboard listener for confirm dialogs:
+            // Accepted with Enter, Space, or clicking confirm
+            // Cancelled with cancel button, clicking outside, or ANY other key
+            if (type === "confirm") {
+                const handleConfirmKey = (e) => {
+                    // Ignore bare modifier keys (Ctrl, Shift, Alt, Meta)
+                    if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) {
+                        return;
+                    }
+
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    if (e.key === "Enter" || e.code === "Space" || e.key === " ") {
+                        finish(true);
+                    } else {
+                        finish(false);
+                    }
+                };
+
+                window.addEventListener("keydown", handleConfirmKey, true);
+                cleanupKeyHandler = () => {
+                    window.removeEventListener("keydown", handleConfirmKey, true);
+                };
+            } else if (type === "alert") {
+                const handleAlertKey = (e) => {
+                    if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    finish(true);
+                };
+
+                window.addEventListener("keydown", handleAlertKey, true);
+                cleanupKeyHandler = () => {
+                    window.removeEventListener("keydown", handleAlertKey, true);
+                };
+            }
+
             // Header
             const head = document.createElement("div");
             head.style.cssText = "display: flex; align-items: center; justify-content: space-between;";
@@ -3904,8 +3954,7 @@ class UIController {
             closeX.innerHTML = "✕";
             closeX.style.cssText = "background: transparent; border: none; color: #94a3b8; font-size: 14px; cursor: pointer;";
             closeX.addEventListener("click", () => {
-                this.closeDialog(type === "confirm" ? false : null);
-                resolve(type === "confirm" ? false : null);
+                finish(type === "confirm" ? false : null);
             });
             head.appendChild(closeX);
             this.dialogModal.appendChild(head);
@@ -3937,12 +3986,10 @@ class UIController {
                     if (e.key === "Enter") {
                         e.preventDefault();
                         const val = promptInput.value;
-                        this.closeDialog(val);
-                        resolve(val);
+                        finish(val);
                     } else if (e.key === "Escape") {
                         e.preventDefault();
-                        this.closeDialog(null);
-                        resolve(null);
+                        finish(null);
                     }
                 });
                 this.dialogModal.appendChild(promptInput);
@@ -3950,7 +3997,7 @@ class UIController {
 
             // Buttons Row
             const btnRow = document.createElement("div");
-            btnRow.style.cssText = "display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;";
+            btnRow.style.cssText = "display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 6px;";
 
             if (type !== "alert") {
                 const cancelBtn = document.createElement("button");
@@ -3965,8 +4012,7 @@ class UIController {
                     cursor: pointer;
                 `;
                 cancelBtn.addEventListener("click", () => {
-                    this.closeDialog(type === "confirm" ? false : null);
-                    resolve(type === "confirm" ? false : null);
+                    finish(type === "confirm" ? false : null);
                 });
                 btnRow.appendChild(cancelBtn);
             }
@@ -3985,12 +4031,19 @@ class UIController {
             `;
             confirmBtn.addEventListener("click", () => {
                 const val = type === "prompt" ? (promptInput ? promptInput.value : "") : true;
-                this.closeDialog(val);
-                resolve(val);
+                finish(val);
             });
             btnRow.appendChild(confirmBtn);
 
             this.dialogModal.appendChild(btnRow);
+
+            // Keyboard instruction hint for confirm dialogs
+            if (type === "confirm") {
+                const hintEl = document.createElement("div");
+                hintEl.style.cssText = "font-size: 11px; color: #64748b; text-align: right; margin-top: 2px;";
+                hintEl.innerHTML = `<kbd style="background: rgba(30, 41, 59, 0.9); border: 1px solid rgba(51, 65, 85, 0.9); border-radius: 3px; padding: 1px 4px; color: #94a3b8; font-family: monospace;">Enter</kbd> / <kbd style="background: rgba(30, 41, 59, 0.9); border: 1px solid rgba(51, 65, 85, 0.9); border-radius: 3px; padding: 1px 4px; color: #94a3b8; font-family: monospace;">Space</kbd> to confirm &nbsp;•&nbsp; Any other key to cancel`;
+                this.dialogModal.appendChild(hintEl);
+            }
 
             setTimeout(() => {
                 if (promptInput) {
@@ -4004,6 +4057,15 @@ class UIController {
     }
 
     closeDialog(result = null) {
+        if (this._dialogCleanup) {
+            this._dialogCleanup();
+            this._dialogCleanup = null;
+        }
+        if (this._dialogResolve) {
+            const res = this._dialogResolve;
+            this._dialogResolve = null;
+            res(result);
+        }
         this.isDialogOpen = false;
         this.removeOverlay("dialog");
         if (this.dialogModal) {

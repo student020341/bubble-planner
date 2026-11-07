@@ -31,6 +31,7 @@ class ActionRegistry {
         /** Default base triggers snapshot */
         this.defaultBindings = [
             ["node:dblclick", "drillDown"],
+            ["relationship:dblclick", "editLabel"],
             ["canvas:dblclick", "createBubble"],
             ["Escape", "drillUp"],
             ["KeyI", "inspectEntity"],

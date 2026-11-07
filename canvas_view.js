@@ -195,6 +195,28 @@ class CanvasView {
         return { node: null, relationship: null, hitHandle: false, hitInspectHandle: false, hitPropFilter: false };
     }
 
+    /**
+     * Get the world center position and height of an action/relationship pill.
+     * @param {BubbleRelationship} rel
+     * @returns {{x: number, y: number, h: number}}
+     */
+    getRelationshipPillCenter(rel) {
+        if (!rel) return { x: this.camera.x, y: this.camera.y, h: 24 };
+        if (this.renderedLabelBoxes) {
+            const item = this.renderedLabelBoxes.find(i => i.rel && i.rel.id === rel.id);
+            if (item) {
+                return { x: item.box.x + item.box.w / 2, y: item.box.y + item.box.h / 2, h: item.box.h };
+            }
+        }
+        // Fallback: midpoint between node from and to
+        const fromNode = this.store.doc.nodes.find(n => n.id === rel.from);
+        const toNode = this.store.doc.nodes.find(n => n.id === rel.to);
+        if (fromNode && toNode) {
+            return { x: (fromNode.x + toNode.x) / 2, y: (fromNode.y + toNode.y) / 2, h: 24 };
+        }
+        return { x: this.camera.x, y: this.camera.y, h: 24 };
+    }
+
     onMouseDown(e) {
         this.lastMousePos = { x: e.clientX, y: e.clientY };
         this.mouseDownScreenPos = { x: e.clientX, y: e.clientY };
@@ -408,7 +430,15 @@ class CanvasView {
         };
 
         if (hit.node) {
+            this.selectedNode = hit.node;
+            this.lastFocusedNode = hit.node;
+            this.selectedRelationship = null;
             this.actionRegistry.trigger("node:dblclick", context);
+        } else if (hit.relationship) {
+            this.selectedRelationship = hit.relationship;
+            this.selectedNode = null;
+            context.relationship = hit.relationship;
+            this.actionRegistry.trigger("relationship:dblclick", context);
         } else {
             this.actionRegistry.trigger("canvas:dblclick", context);
         }

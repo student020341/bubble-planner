@@ -98,17 +98,7 @@ actionRegistry.register({
     description: "View, copy, or download tab-indented outline text",
     target: "global",
     execute: () => {
-        uiController.openImportExportModal("export");
-    }
-});
-
-actionRegistry.register({
-    id: "importOutline",
-    title: "Import Outline",
-    description: "Paste and parse tab-indented outline into the active project",
-    target: "global",
-    execute: () => {
-        uiController.openImportExportModal("import");
+        uiController.openExportOutlineModal();
     }
 });
 
@@ -142,11 +132,11 @@ actionRegistry.register({
 actionRegistry.register({
     id: "togglePropertyFilter",
     title: "Property Filter",
-    description: "Open inline property quick-filter card on selected bubble",
-    target: "node",
-    isEnabled: () => Boolean(canvasView.selectedNode),
+    description: "Open inline property quick-filter card on selected bubble or action",
+    target: "global",
+    isEnabled: (ctx) => Boolean((ctx && (ctx.node || ctx.relationship)) || canvasView.selectedNode || canvasView.selectedRelationship),
     execute: (ctx) => {
-        const target = ctx.node || canvasView.selectedNode;
+        const target = (ctx && (ctx.node || ctx.relationship)) || canvasView.selectedNode || canvasView.selectedRelationship;
         if (target) {
             uiController.togglePropertyQuickFilter(target);
         }
@@ -200,15 +190,23 @@ actionRegistry.register({
 actionRegistry.register({
     id: "editLabel",
     title: "Edit Label",
-    description: "Rename the currently selected bubble",
-    target: "node",
-    isEnabled: () => Boolean(canvasView.selectedNode),
-    execute: async () => {
-        const node = canvasView.selectedNode;
-        if (!node) return;
-        const newLabel = await uiController.customPrompt("Edit bubble name:", node.label, "Rename Bubble", "Save");
-        if (newLabel && newLabel.trim()) {
-            store.updateNode(node.id, { label: newLabel.trim() });
+    description: "Rename the currently selected bubble or action",
+    target: "global",
+    isEnabled: (ctx) => Boolean((ctx && (ctx.node || ctx.relationship)) || canvasView.selectedNode || canvasView.selectedRelationship),
+    execute: async (ctx) => {
+        const targetNode = (ctx && ctx.node) || canvasView.selectedNode;
+        const targetRel = (ctx && ctx.relationship) || canvasView.selectedRelationship;
+
+        if (targetNode) {
+            const newLabel = await uiController.customPrompt("Edit bubble name:", targetNode.label, "Rename Bubble", "Save");
+            if (newLabel && newLabel.trim()) {
+                store.updateNode(targetNode.id, { label: newLabel.trim() });
+            }
+        } else if (targetRel) {
+            const newLabel = await uiController.customPrompt("Edit action label:", targetRel.label, "Rename Action", "Save");
+            if (newLabel && newLabel.trim()) {
+                store.updateRelationship(targetRel.id, { label: newLabel.trim() });
+            }
         }
     }
 });
@@ -233,8 +231,17 @@ actionRegistry.register({
                 canvasView.lastFocusedNode = null;
             }
         } else if (canvasView.selectedRelationship) {
-            store.removeRelationship(canvasView.selectedRelationship.id);
-            canvasView.selectedRelationship = null;
+            const rel = canvasView.selectedRelationship;
+            const confirmed = await uiController.customConfirm(
+                `Delete action "${rel.label}"?`,
+                "Delete Action",
+                true,
+                "Delete"
+            );
+            if (confirmed) {
+                store.removeRelationship(rel.id);
+                canvasView.selectedRelationship = null;
+            }
         }
     }
 });
@@ -263,6 +270,11 @@ function buildKeyCombo(e) {
 let pendingSequence = [];
 
 window.addEventListener("keydown", (e) => {
+    // 0. If a modal dialog is open, let the dialog handle its own keyboard input
+    if (uiController.isDialogOpen) {
+        return;
+    }
+
     // 1. If a sequence is pending and Escape is pressed, cancel the sequence immediately
     if (e.key === "Escape" && pendingSequence.length > 0) {
         pendingSequence = [];
